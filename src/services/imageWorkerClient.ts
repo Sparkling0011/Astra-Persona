@@ -27,6 +27,7 @@ export async function optimizeImageDataUrl(options: OptimizeImageOptions): Promi
     return dataUrlToBlob(options.dataUrl)
   }
 
+  // Lazily create one worker and reuse it for ZIP export image normalization.
   worker ??= new Worker(new URL('../workers/imageProcessing.worker.ts', import.meta.url), {
     type: 'module',
   })

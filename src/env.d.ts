@@ -19,6 +19,7 @@ interface ImportMetaEnv {
   readonly VITE_AI_MAX_CONCURRENCY?: string
   readonly VITE_AI_RETRY_COUNT?: string
   readonly VITE_AI_RETRY_BASE_DELAY_MS?: string
+  readonly VITE_AI_REQUEST_TIMEOUT_MS?: string
 }
 
 interface ImportMeta {

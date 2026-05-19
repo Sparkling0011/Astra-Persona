@@ -148,6 +148,7 @@ function stageSelectionToImage(rect: Selection) {
   const stage = stageRef.value?.getBoundingClientRect()
   const baseSize = Math.min(stage?.width ?? 960, stage?.height ?? 960) * 0.72
   const renderedSize = baseSize * zoom.value
+  // Convert the user's screen-space selection back into the 960px export canvas coordinate system.
   const left = ((stage?.width ?? 0) - renderedSize) / 2 + pan.value.x
   const top = ((stage?.height ?? 0) - renderedSize) / 2 + pan.value.y
   const scale = 960 / renderedSize

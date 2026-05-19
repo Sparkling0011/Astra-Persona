@@ -23,6 +23,7 @@ export async function exportPersonaZip(persona: Persona): Promise<Blob> {
 
   for (const [index, avatar] of persona.avatars.entries()) {
     try {
+      // Remote avatars are normalized to PNG blobs so the exported kit is self-contained.
       const dataUrl = avatar.url.startsWith('data:') ? avatar.url : await urlToDataUrl(avatar.url)
       const blob = await optimizeImageDataUrl({
         dataUrl,

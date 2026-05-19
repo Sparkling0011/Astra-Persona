@@ -24,6 +24,7 @@ workerScope.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   try {
     const blob = await fetch(message.dataUrl).then((response) => response.blob())
     const bitmap = await createImageBitmap(blob)
+    // Downscale large avatars off the main thread before they are added to the ZIP package.
     const scale = Math.min(1, message.maxSize / Math.max(bitmap.width, bitmap.height))
     const width = Math.max(1, Math.round(bitmap.width * scale))
     const height = Math.max(1, Math.round(bitmap.height * scale))

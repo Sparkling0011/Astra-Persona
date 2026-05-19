@@ -62,7 +62,7 @@ async function regenerateWithAI(brand: PersonaBrand, section: PersonaSection): P
 
   if (section === 'avatar') {
     const identity = await aiService.generatePersonaTextIdentity({ prompt: brand.prompt, style: brand.style })
-    const imagePrompt = await aiService.optimizePrompt(identity.imagePrompt, brand.style)
+    const imagePrompt = identity.imagePrompt || brand.prompt
     const imageUrls = aiService.canGenerateImages()
       ? await aiService.generateImages({ prompt: imagePrompt, count: 3 })
       : createAvatars(createId('avatar_set'), brand.style, imagePrompt, brand.params.imageCount).map((avatar) => avatar.url)
@@ -102,6 +102,7 @@ async function regenerateWithAI(brand: PersonaBrand, section: PersonaSection): P
 }
 
 function shouldUseRealAI() {
+  // Keep mock mode available for UI work, tests, and demos without API keys.
   return import.meta.env.VITE_USE_REAL_AI === 'true'
 }
 

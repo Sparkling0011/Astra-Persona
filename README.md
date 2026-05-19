@@ -75,6 +75,7 @@ VITE_AI_TEXT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 VITE_AI_TEXT_MODEL=doubao-seed-2-0-pro-260215
 VITE_AI_TEXT_CHAT_PATH=/chat/completions
 VITE_AI_TEXT_RESPONSE_FORMAT_ENABLED=false
+VITE_AI_REQUEST_TIMEOUT_MS=45000
 
 # 可选：doubao-seed-2-0-pro-260215 是文本输出模型，不直接生成图片。
 # 头像图片可留空使用本地 fallback，或另配火山方舟图片生成模型。

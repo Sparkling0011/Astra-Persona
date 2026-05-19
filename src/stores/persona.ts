@@ -100,7 +100,6 @@ export const usePersonaStore = defineStore(
       addPromptHistory(form.value)
 
       try {
-        debugger
         const persona = normalizePersona(
           await requestGeneratePersona(params.value),
           params.value,
@@ -366,6 +365,7 @@ export const usePersonaStore = defineStore(
       generatingSection.value = section
       error.value = ''
       progress.value = 8
+      // The provider only returns final results, so this keeps the UI responsive while the request is pending.
       progressTimer = window.setInterval(() => {
         progress.value = Math.min(progress.value + Math.random() * 14, 86)
       }, 260)

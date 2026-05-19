@@ -30,6 +30,7 @@ export interface AIServiceConfig {
   maxConcurrency: number
   retryCount: number
   retryBaseDelayMs: number
+  requestTimeoutMs: number
 }
 
 export interface AIMessage {
@@ -40,6 +41,7 @@ export interface AIMessage {
 export interface TextGenerationOptions {
   messages: AIMessage[]
   temperature?: number
+  maxTokens?: number
   responseFormat?: 'text' | 'json_object'
   signal?: AbortSignal
   onDelta?: (delta: string, fullText: string) => void
@@ -159,6 +161,7 @@ export class AIQueue {
 
   constructor(private readonly maxConcurrency = 2) {}
 
+  // A tiny in-memory queue keeps duplicate user actions from flooding the AI provider.
   enqueue<T>(run: (signal: AbortSignal) => Promise<T>, externalSignal?: AbortSignal): AIQueueJob<T> {
     const id = createId('ai_job')
     const controller = new AbortController()
@@ -339,20 +342,22 @@ export class AIService {
       model: this.config.text.model,
       messages: options.messages,
       temperature: options.temperature ?? 0.7,
+      max_tokens: options.maxTokens,
       stream: Boolean(options.onDelta),
       response_format: options.responseFormat === 'json_object' && this.config.text.responseFormatEnabled ? { type: 'json_object' } : undefined,
     }
 
     return withRetry(
       async () => {
+        const requestSignal = withTimeout(options.signal, this.config.requestTimeoutMs)
         const request: RequestInit = {
           method: 'POST',
           headers: this.createHeaders(this.config.text.apiKey),
           body: JSON.stringify(body),
         }
 
-        if (options.signal) {
-          request.signal = options.signal
+        if (requestSignal) {
+          request.signal = requestSignal
         }
 
         const response = await fetch(joinUrl(this.config.text.baseUrl, this.config.text.chatPath), request)
@@ -472,20 +477,23 @@ export class AIService {
   }
 
   async generatePersonaTextIdentity(form: PersonaForm, signal?: AbortSignal, onDelta?: TextGenerationOptions['onDelta']): Promise<PersonaTextIdentity> {
-    const optimizedPrompt = await this.optimizePrompt(form.prompt, form.style, signal)
+    // Local prompt expansion is deterministic and avoids an extra slow LLM call in the main flow.
+    const optimizedPrompt = buildLocalOptimizedPrompt(form.prompt, form.style)
 
     if (!this.hasTextCredentials()) {
       return createLocalTextIdentity(optimizedPrompt, form.style)
     }
 
+    // Keep the main user flow to one LLM round trip: identity copy and image prompt are generated together.
     const request: TextGenerationOptions = {
-      temperature: 0.75,
+      temperature: 0.45,
+      maxTokens: 900,
       responseFormat: 'json_object',
       messages: [
         {
           role: 'system',
           content:
-            '你是 AI 虚拟角色品牌生成器。必须只输出 JSON，不要 Markdown。字段：nickname, username, signature, bio, tags, imagePrompt。bio 是一段统一自我介绍，不要按平台拆分。tags 是字符串数组。',
+            '你是高级个人品牌策略师。必须只输出紧凑 JSON，不要 Markdown、解释或代码块。字段：nickname, username, signature, bio, tags, imagePrompt。bio 是一段统一自我介绍，不要按平台拆分。tags 是 5-7 个短标签。imagePrompt 用于头像生成，要求主体清晰、居中、可识别。',
         },
         {
           role: 'user',
@@ -511,7 +519,7 @@ export class AIService {
     const now = new Date().toISOString()
     const id = createId('brand')
     const identity = await this.generatePersonaTextIdentity(options.form, options.signal, options.onTextDelta)
-    const imagePrompt = await this.optimizePrompt(identity.imagePrompt || options.form.prompt, options.form.style, options.signal)
+    const imagePrompt = identity.imagePrompt || buildLocalOptimizedPrompt(options.form.prompt, options.form.style)
     let imageUrls: string[]
 
     if (this.hasImageCredentials()) {
@@ -662,6 +670,7 @@ export function createAIConfigFromEnv(): AIServiceConfig {
     maxConcurrency: Number(readEnv('VITE_AI_MAX_CONCURRENCY', '2')),
     retryCount: Number(readEnv('VITE_AI_RETRY_COUNT', '2')),
     retryBaseDelayMs: Number(readEnv('VITE_AI_RETRY_BASE_DELAY_MS', '700')),
+    requestTimeoutMs: Number(readEnv('VITE_AI_REQUEST_TIMEOUT_MS', '45000')),
   }
 }
 
@@ -884,6 +893,7 @@ function dataUrlToBlob(dataUrl: string) {
 }
 
 function extractJson(input: string) {
+  // Doubao may wrap JSON with prose when response_format is disabled; recover the first object block.
   const trimmed = input.trim()
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/)
 
@@ -985,6 +995,28 @@ function mergeSignals(first?: AbortSignal, second?: AbortSignal) {
   const abort = () => controller.abort()
   first.addEventListener('abort', abort, { once: true })
   second.addEventListener('abort', abort, { once: true })
+
+  return controller.signal
+}
+
+function withTimeout(signal: AbortSignal | undefined, timeoutMs: number) {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return signal
+  }
+
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timer = window.setTimeout(abort, timeoutMs)
+
+  signal?.addEventListener('abort', abort, { once: true })
+  controller.signal.addEventListener(
+    'abort',
+    () => {
+      window.clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    },
+    { once: true },
+  )
 
   return controller.signal
 }

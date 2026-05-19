@@ -95,6 +95,7 @@ function drawCanvas(showSelection = true) {
   ctx.filter = filterToCanvas(filterMode.value)
   drawImageCover(ctx, image, canvas.width, canvas.height)
   ctx.filter = 'none'
+  // Canvas is the single source of truth for preview and PNG export, so overlays render here too.
   drawOverlayText(ctx, canvas.width, canvas.height)
   drawWatermark(ctx, canvas.width, canvas.height)
 
@@ -150,6 +151,7 @@ async function inpaintSelection() {
     const maskDataUrl = createMaskDataUrl(rect)
     let nextDataUrl = ''
 
+    // Prefer configured image APIs; keep a local fallback so editing remains usable offline.
     if (import.meta.env.VITE_USE_REAL_AI === 'true' && import.meta.env.VITE_AI_IMAGE_API_KEY) {
       try {
         nextDataUrl = await aiService.inpaintImage({
