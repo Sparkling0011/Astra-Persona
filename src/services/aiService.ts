@@ -580,10 +580,11 @@ export class AIService {
 export function createAIConfigFromEnv(): AIServiceConfig {
   const apiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
   const realAIEnabled = readBooleanEnv(import.meta.env.VITE_USE_REAL_AI, false)
+  const hasProductionApiBaseUrl = !import.meta.env.PROD || Boolean(apiBaseUrl)
 
   return {
     text: {
-      enabled: realAIEnabled,
+      enabled: realAIEnabled && hasProductionApiBaseUrl,
       baseUrl: apiBaseUrl,
       chatPath: '/api/ai/text',
       responseFormatEnabled: readBooleanEnv(import.meta.env.VITE_AI_TEXT_RESPONSE_FORMAT_ENABLED, false),

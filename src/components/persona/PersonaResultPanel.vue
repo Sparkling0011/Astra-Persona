@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Download, FileText, ImageIcon, PenLine, Share2, Sparkles, Tags, UserRound } from '@lucide/vue'
+import { AlertCircle, ArrowLeft, Download, FileText, ImageIcon, PenLine, Share2, Sparkles, Tags, UserRound } from '@lucide/vue'
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
@@ -17,6 +17,8 @@ import type { AssetType, PersonaBrand } from '@/types/persona'
 const props = defineProps<{
   active: boolean
   brand: PersonaBrand | undefined
+  errorMessage: string
+  failed: boolean
   loading: boolean
 }>()
 
@@ -49,7 +51,7 @@ const visibleAssetTypes = computed<AssetType[]>(() => {
 })
 
 const hasPendingSelection = computed(() => {
-  if (!props.brand || props.loading) {
+  if (!props.brand || props.loading || props.failed) {
     return false
   }
 
@@ -104,14 +106,16 @@ function isSameAssetSet(left: AssetType[], right: AssetType[]) {
           <p class="text-xs font-medium tracking-[0.18em] text-primary">方案预览</p>
           <h2 class="mt-2 whitespace-nowrap text-xl font-semibold tracking-normal">生成结果</h2>
           <p class="mt-2 text-sm leading-6 text-muted-foreground">
-            {{ brand ? `最近更新于 ${generatedTime}` : '生成后可在此管理、下载和分享内容。' }}
+            {{ failed ? '本次请求失败，未生成或覆盖任何内容。' : brand ? `最近更新于 ${generatedTime}` : '生成后可在此管理、下载和分享内容。' }}
           </p>
         </div>
       </div>
-      <span class="workspace-status">{{ loading ? '生成中' : brand ? '已生成' : '待生成' }}</span>
+      <span class="workspace-status" :class="failed ? 'border-red-500/25 bg-red-500/10 text-red-600 dark:text-red-300' : ''">
+        {{ loading ? '生成中' : failed ? '生成失败' : brand ? '已生成' : '待生成' }}
+      </span>
     </div>
 
-    <div v-if="brand" class="relative z-10 flex items-center justify-between gap-3 border-y border-white/10 py-3">
+    <div v-if="brand && !loading && !failed" class="relative z-10 flex items-center justify-between gap-3 border-y border-white/10 py-3">
       <div class="min-w-0">
         <p class="text-xs font-medium text-foreground">本次生成结果</p>
         <p class="mt-1 truncate text-[11px] text-muted-foreground">{{ visibleAssetTypes.length }} 项内容可用</p>
@@ -132,7 +136,26 @@ function isSameAssetSet(left: AssetType[], right: AssetType[]) {
       生成内容已变更。当前仍展示上次结果，重新生成后将更新为新的内容组合。
     </div>
 
-    <template v-if="brand || loading">
+    <div v-if="failed && !loading" class="result-empty-state relative z-10 border-red-500/15 bg-red-500/[0.04]">
+      <span class="grid size-12 place-items-center rounded-lg border border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-300">
+        <AlertCircle class="size-5" />
+      </span>
+      <div>
+        <h3 class="text-base font-semibold text-foreground">本次生成未完成</h3>
+        <p class="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
+          {{ errorMessage || 'AI 服务暂时不可用，请检查配置后重试。' }}
+        </p>
+        <p v-if="brand" class="mt-2 text-xs leading-5 text-muted-foreground">
+          上一次成功结果仍保存在“最近生成”中，本次失败没有写入历史记录。
+        </p>
+      </div>
+      <BaseButton variant="secondary" @click="emit('configure')">
+        <ArrowLeft class="size-4" />
+        返回参数配置
+      </BaseButton>
+    </div>
+
+    <template v-else-if="brand || loading">
       <template v-for="type in visibleAssetTypes" :key="type">
         <AssetResultSkeleton v-if="isAssetLoading(type)" :type="type" />
         <IdentityAssetCard v-else-if="type === 'identity' && brand" :brand="brand" :loading="loading" />

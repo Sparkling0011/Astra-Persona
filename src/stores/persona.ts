@@ -74,6 +74,7 @@ export const usePersonaStore = defineStore(
     const progress = ref(0)
     const error = ref('')
     const lastFailedPart = ref<PersonaSection | 'brand' | null>(null)
+    const generationOutcome = ref<'idle' | 'loading' | 'success' | 'failed'>('idle')
     const shareUrl = ref('')
     const shareQrCodeDataUrl = ref('')
     let progressTimer: number | undefined
@@ -462,6 +463,8 @@ export const usePersonaStore = defineStore(
 
       currentPersonaId.value = personaId
       restoreWorkspaceFromPersona(persona)
+      generationOutcome.value = 'idle'
+      clearError()
       isHistoryOpen.value = false
     }
 
@@ -572,6 +575,9 @@ export const usePersonaStore = defineStore(
       generatingSection.value = section
       error.value = ''
       progress.value = 8
+      if (section === 'brand') {
+        generationOutcome.value = 'loading'
+      }
       // The provider only returns final results, so this keeps the UI responsive while the request is pending.
       progressTimer = window.setInterval(() => {
         progress.value = Math.min(progress.value + Math.random() * 14, 86)
@@ -580,6 +586,9 @@ export const usePersonaStore = defineStore(
     }
 
     function finishGeneration() {
+      if (generatingSection.value === 'brand') {
+        generationOutcome.value = 'success'
+      }
       progress.value = 100
       window.setTimeout(() => {
         stopGeneration()
@@ -595,6 +604,9 @@ export const usePersonaStore = defineStore(
           ? caughtError.message
           : '生成失败，请稍后重试'
       lastFailedPart.value = section
+      if (section === 'brand') {
+        generationOutcome.value = 'failed'
+      }
       stopGeneration()
     }
 
@@ -609,6 +621,9 @@ export const usePersonaStore = defineStore(
 
     function cancelGeneration() {
       activeGenerationController?.abort()
+      if (generatingSection.value === 'brand') {
+        generationOutcome.value = 'idle'
+      }
       stopGeneration()
     }
 
@@ -682,6 +697,7 @@ export const usePersonaStore = defineStore(
       error,
       errorMessage,
       lastFailedPart,
+      generationOutcome,
       shareUrl,
       shareQrCodeDataUrl,
       generatePersona,

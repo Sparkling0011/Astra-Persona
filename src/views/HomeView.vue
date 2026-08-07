@@ -9,7 +9,7 @@ import PromptComposer from '@/components/persona/PromptComposer.vue'
 import { usePersonaStore } from '@/stores/persona'
 
 const personaStore = usePersonaStore()
-const { activeBrand, isGenerating } = storeToRefs(personaStore)
+const { activeBrand, errorMessage, generationOutcome, isGenerating } = storeToRefs(personaStore)
 const activePanel = ref<'select' | 'config' | 'preview'>('select')
 
 const mobileSteps = [
@@ -61,6 +61,8 @@ watch(isGenerating, (value) => {
       <PersonaResultPanel
         :active="activePanel === 'preview'"
         :brand="activeBrand"
+        :error-message="errorMessage"
+        :failed="generationOutcome === 'failed'"
         :loading="isGenerating"
         :class="activePanel !== 'preview' ? 'hidden xl:grid' : ''"
         @focus-panel="activePanel = 'preview'"
