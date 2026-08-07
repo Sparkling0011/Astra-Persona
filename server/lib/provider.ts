@@ -24,11 +24,7 @@ export async function requestProvider(path: string, apiKey: string, init: Reques
     if (!response.ok) {
       const providerMessage = await response.text()
       logger.warn({ status: response.status, providerMessage }, 'AI provider request failed')
-      throw new AppError(
-        response.status >= 500 ? 502 : response.status,
-        'AI_PROVIDER_ERROR',
-        'AI 服务暂时不可用，请稍后重试',
-      )
+      throw createProviderError(response.status)
     }
 
     return response
@@ -43,6 +39,22 @@ export async function requestProvider(path: string, apiKey: string, init: Reques
 
     throw new AppError(502, 'AI_PROVIDER_UNREACHABLE', '无法连接 AI 服务，请稍后重试', error)
   }
+}
+
+function createProviderError(status: number) {
+  if (status === 401 || status === 403) {
+    return new AppError(503, 'AI_PROVIDER_AUTH_ERROR', 'AI 服务配置异常，请联系管理员')
+  }
+
+  if (status === 429) {
+    return new AppError(503, 'AI_PROVIDER_BUSY', 'AI 服务当前繁忙，请稍后重试')
+  }
+
+  if (status === 400 || status === 404) {
+    return new AppError(502, 'AI_PROVIDER_CONFIG_ERROR', 'AI 服务配置异常，请联系管理员')
+  }
+
+  return new AppError(502, 'AI_PROVIDER_ERROR', 'AI 服务暂时不可用，请稍后重试')
 }
 
 // Streams provider bytes directly to the browser, preserving SSE for low-latency text output.

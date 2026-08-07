@@ -136,6 +136,7 @@ export class AIServiceError extends Error {
     message: string,
     public readonly code: 'config' | 'network' | 'abort' | 'parse' | 'provider',
     public readonly cause?: unknown,
+    public readonly retryable = false,
   ) {
     super(message)
     this.name = 'AIServiceError'
@@ -566,13 +567,13 @@ export class AIService {
 
   private assertTextConfig() {
     if (!this.hasTextCredentials()) {
-      throw new AIServiceError('真实 AI 服务尚未启用，请检查 VITE_USE_REAL_AI 和 VITE_API_BASE_URL', 'config')
+      throw new AIServiceError('AI 服务暂时不可用，请联系管理员', 'config')
     }
   }
 
   private assertImageConfig() {
     if (!this.hasImageCredentials()) {
-      throw new AIServiceError('图像生成服务尚未启用，请检查 VITE_ENABLE_REAL_IMAGE', 'config')
+      throw new AIServiceError('图像生成服务暂时不可用，请联系管理员', 'config')
     }
   }
 }
@@ -1027,7 +1028,7 @@ async function withRetry<T>(run: () => Promise<T>, retryCount: number, baseDelay
     try {
       return await run()
     } catch (error) {
-      if (isAbortError(error) || attempt === retryCount) {
+      if (isAbortError(error) || (error instanceof AIServiceError && !error.retryable) || attempt === retryCount) {
         throw normalizeError(error)
       }
 
@@ -1044,8 +1045,43 @@ async function assertResponse(response: Response) {
     return
   }
 
-  const text = await response.text().catch(() => '')
-  throw new AIServiceError(`AI 接口请求失败：${response.status} ${text || response.statusText}`, 'provider')
+  const payload = await response.json().catch(() => null) as { error?: { code?: string } } | null
+  const errorCode = payload?.error?.code
+  const retryableCodes = ['AI_PROVIDER_BUSY', 'AI_PROVIDER_ERROR', 'AI_PROVIDER_TIMEOUT', 'AI_PROVIDER_UNREACHABLE']
+  const retryable = errorCode
+    ? retryableCodes.includes(errorCode)
+    : [408, 425, 429, 500, 502, 503, 504].includes(response.status)
+
+  throw new AIServiceError(
+    getPublicErrorMessage(response.status, errorCode),
+    'provider',
+    undefined,
+    retryable,
+  )
+}
+
+function getPublicErrorMessage(status: number, errorCode?: string) {
+  if (errorCode?.includes('CONFIG') || errorCode === 'AI_PROVIDER_AUTH_ERROR') {
+    return 'AI 服务配置异常，请联系管理员'
+  }
+
+  if (errorCode === 'AI_PROVIDER_TIMEOUT' || status === 504) {
+    return 'AI 服务响应超时，请稍后重试'
+  }
+
+  if (errorCode === 'AI_PROVIDER_BUSY' || status === 429) {
+    return 'AI 服务当前繁忙，请稍后重试'
+  }
+
+  if (status === 400 || status === 422) {
+    return '生成参数不符合要求，请调整后重试'
+  }
+
+  if (status === 404) {
+    return 'AI 服务暂时不可用，请联系管理员'
+  }
+
+  return '生成失败，请稍后重试'
 }
 
 function joinUrl(baseUrl: string, path: string) {
@@ -1130,7 +1166,7 @@ function normalizeError(error: unknown) {
     return new AIServiceError('生成已取消', 'abort', error)
   }
 
-  return new AIServiceError(error instanceof Error ? error.message : 'AI 服务异常', 'network', error)
+  return new AIServiceError('无法连接 AI 服务，请检查网络后重试', 'network', error)
 }
 
 function readBooleanEnv(value: string | undefined, fallback = false) {
