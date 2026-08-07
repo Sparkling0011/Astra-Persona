@@ -3,7 +3,7 @@ services:
     name: astra-persona-api
     runtime: node
     plan: free
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm server:build
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm server:build
     startCommand: pnpm server:start
     healthCheckPath: /api/health
     autoDeployTrigger: commit
