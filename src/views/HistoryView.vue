@@ -10,8 +10,8 @@ const { brands, activeBrandId } = storeToRefs(personaStore)
 <template>
   <section class="grid gap-4">
     <div>
-      <h1 class="text-2xl font-semibold tracking-normal">资产库</h1>
-      <p class="mt-2 text-sm text-muted-foreground">已生成的身份资产会保存在本机，可随时切换、导出或继续编辑。</p>
+      <h1 class="text-2xl font-semibold tracking-normal">历史记录</h1>
+      <p class="mt-2 text-sm text-muted-foreground">已生成的个人品牌方案会保存在本机，可随时切换、导出或继续编辑。</p>
     </div>
 
     <div v-if="brands.length" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -33,7 +33,7 @@ const { brands, activeBrandId } = storeToRefs(personaStore)
     </div>
 
     <div v-else class="rounded-lg border border-dashed border-border bg-card p-10 text-center text-sm text-muted-foreground">
-      暂无资产记录。
+      暂无历史记录。
     </div>
   </section>
 </template>

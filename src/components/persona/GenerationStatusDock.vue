@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Loader2 } from '@lucide/vue'
+import { NProgress } from 'naive-ui'
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
@@ -11,10 +12,12 @@ const { isGenerating, generatingSection, progress, loadingMessage } = storeToRef
 
 const sectionLabel = computed(() => {
   const labelMap: Record<PersonaSection | 'brand', string> = {
-    brand: '身份资产',
-    avatar: '视觉资产',
+    brand: '生成内容',
+    identity: '名称与用户名',
+    avatar: '头像形象',
     signature: '签名',
     bio: '简介',
+    tags: '关键词',
   }
 
   return generatingSection.value ? labelMap[generatingSection.value] : '待命'
@@ -22,7 +25,7 @@ const sectionLabel = computed(() => {
 
 const statusText = computed(() => loadingMessage.value || `正在生成${sectionLabel.value}`)
 
-const barWidth = computed(() => `${Math.max(isGenerating.value ? 8 : 0, progress.value)}%`)
+const visibleProgress = computed(() => Math.max(isGenerating.value ? 8 : 0, progress.value))
 </script>
 
 <template>
@@ -52,12 +55,7 @@ const barWidth = computed(() => `${Math.max(isGenerating.value ? 8 : 0, progress
         </div>
       </div>
 
-      <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-background/65 ring-1 ring-white/10">
-        <div
-          class="h-full rounded-full bg-[linear-gradient(90deg,hsl(var(--primary)),#7c8cf8)] transition-all duration-300"
-          :style="{ width: barWidth }"
-        />
-      </div>
+      <NProgress class="mt-2" type="line" :percentage="visibleProgress" :height="6" :border-radius="999" :show-indicator="false" />
     </section>
   </Transition>
 </template>

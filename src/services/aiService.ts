@@ -1,26 +1,22 @@
-import type { AvatarVariant, PersonaBrand, PersonaForm, PersonaGenerationParams, PersonaStyle, PlatformBio } from '@/types/persona'
+import { createDefaultAssetConfigs, createDefaultGenerationContext } from '@/constants/assets'
+import type { AssetConfigState, AssetType, AvatarVariant, GenerationContext, PersonaBrand, PersonaForm, PersonaGenerationParams, PersonaStyle, PlatformBio } from '@/types/persona'
 import { createId } from '@/utils/id'
 
-type AIProvider = 'openai-compatible' | 'dashscope' | 'doubao' | 'deepseek' | 'siliconflow' | 'custom'
 type AIJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 type ImageStatus = 'queued' | 'running' | 'succeeded' | 'failed'
 
 interface AIBaseConfig {
-  provider: AIProvider
-  apiKey: string
   baseUrl: string
+  enabled: boolean
 }
 
 export interface TextModelConfig extends AIBaseConfig {
-  model: string
   chatPath: string
   responseFormatEnabled: boolean
 }
 
 export interface ImageModelConfig extends AIBaseConfig {
-  model: string
   generationPath: string
-  editPath?: string
   pollPath?: string
 }
 
@@ -55,15 +51,6 @@ export interface ImageGenerationOptions {
   onProgress?: (progress: ImageProgress) => void
 }
 
-export interface ImageInpaintingOptions {
-  imageDataUrl: string
-  maskDataUrl: string
-  prompt: string
-  size?: string
-  signal?: AbortSignal
-  onProgress?: (progress: ImageProgress) => void
-}
-
 export interface ImageProgress {
   status: ImageStatus
   progress: number
@@ -72,6 +59,7 @@ export interface ImageProgress {
 
 export interface PersonaTextIdentity {
   nickname: string
+  nicknames: string[]
   username: string
   signature: string
   bio: string
@@ -276,19 +264,6 @@ export class AIService {
     }, options.signal)
   }
 
-  enqueueImageInpainting(options: ImageInpaintingOptions): AIQueueJob<string> {
-    return this.queue.enqueue((signal) => {
-      const nextOptions: ImageInpaintingOptions = { ...options }
-      const mergedSignal = mergeSignals(options.signal, signal)
-
-      if (mergedSignal) {
-        nextOptions.signal = mergedSignal
-      }
-
-      return this.inpaintImage(nextOptions)
-    }, options.signal)
-  }
-
   enqueueCompletePersona(options: CompletePersonaOptions): AIQueueJob<PersonaBrand> {
     return this.queue.enqueue((signal) => {
       const nextOptions: CompletePersonaOptions = { ...options }
@@ -339,7 +314,6 @@ export class AIService {
     this.assertTextConfig()
 
     const body = {
-      model: this.config.text.model,
       messages: options.messages,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.maxTokens,
@@ -352,7 +326,7 @@ export class AIService {
         const requestSignal = withTimeout(options.signal, this.config.requestTimeoutMs)
         const request: RequestInit = {
           method: 'POST',
-          headers: this.createHeaders(this.config.text.apiKey),
+          headers: this.createHeaders(),
           body: JSON.stringify(body),
         }
 
@@ -386,9 +360,8 @@ export class AIService {
 
         const request: RequestInit = {
           method: 'POST',
-          headers: this.createHeaders(this.config.image.apiKey),
+          headers: this.createHeaders(),
           body: JSON.stringify({
-            model: this.config.image.model,
             prompt: options.prompt,
             n: options.count ?? 3,
             size: options.size ?? '1024x1024',
@@ -425,79 +398,31 @@ export class AIService {
     )
   }
 
-  async inpaintImage(options: ImageInpaintingOptions): Promise<string> {
-    this.assertImageConfig()
-
-    const editPath = this.config.image.editPath
-
-    if (!editPath) {
-      throw new AIServiceError('缺少图像编辑接口路径，请配置 VITE_AI_IMAGE_EDIT_PATH', 'config')
-    }
-
-    return withRetry(
-      async () => {
-        options.onProgress?.({ status: 'queued', progress: 8, message: '局部重绘任务已提交' })
-
-        const formData = new FormData()
-        formData.append('model', this.config.image.model)
-        formData.append('prompt', options.prompt)
-        formData.append('size', options.size ?? '1024x1024')
-        formData.append('image', dataUrlToBlob(options.imageDataUrl), 'avatar.png')
-        formData.append('mask', dataUrlToBlob(options.maskDataUrl), 'mask.png')
-
-        const request: RequestInit = {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.config.image.apiKey}`,
-          },
-          body: formData,
-        }
-
-        if (options.signal) {
-          request.signal = options.signal
-        }
-
-        const response = await fetch(joinUrl(this.config.image.baseUrl, editPath), request)
-        await assertResponse(response)
-
-        const payload = (await response.json()) as ImageGenerationResponse
-        const urls = extractImageUrls(payload)
-
-        if (!urls[0]) {
-          throw new AIServiceError('图像编辑接口未返回图片 URL', 'provider', payload)
-        }
-
-        options.onProgress?.({ status: 'succeeded', progress: 100, message: '局部重绘完成' })
-        return urls[0]
-      },
-      this.config.retryCount,
-      this.config.retryBaseDelayMs,
-      options.signal,
-    )
-  }
-
-  async generatePersonaTextIdentity(form: PersonaForm, signal?: AbortSignal, onDelta?: TextGenerationOptions['onDelta']): Promise<PersonaTextIdentity> {
+  async generatePersonaTextIdentity(form: PersonaForm | PersonaGenerationParams, signal?: AbortSignal, onDelta?: TextGenerationOptions['onDelta']): Promise<PersonaTextIdentity> {
     // Local prompt expansion is deterministic and avoids an extra slow LLM call in the main flow.
     const optimizedPrompt = buildLocalOptimizedPrompt(form.prompt, form.style)
+    const assetConfigs = getAssetConfigs(form)
+    const context = getGenerationContext(form)
+    const assetTypes = getRequestedAssetTypes(form)
 
     if (!this.hasTextCredentials()) {
-      return createLocalTextIdentity(optimizedPrompt, form.style)
+      return createLocalTextIdentity(optimizedPrompt, form.style, assetConfigs, context)
     }
 
     // Keep the main user flow to one LLM round trip: identity copy and image prompt are generated together.
     const request: TextGenerationOptions = {
-      temperature: 0.45,
+      temperature: mapCreativityToTemperature(getCreativity(form)),
       maxTokens: 900,
       responseFormat: 'json_object',
       messages: [
         {
           role: 'system',
           content:
-            '你是高级个人品牌策略师。必须只输出紧凑 JSON，不要 Markdown、解释或代码块。字段：nickname, username, signature, bio, tags, imagePrompt。bio 是一段统一自我介绍，不要按平台拆分。tags 是 5-7 个短标签。imagePrompt 用于头像生成，要求主体清晰、居中、可识别。',
+            '你是高级个人品牌策略师。必须只输出紧凑 JSON，不要 Markdown、解释或代码块。字段：nickname, nicknames, username, signature, bio, tags, imagePrompt。nicknames 是候选昵称数组，nickname 必须等于其第一项。bio 只生成一段统一自我介绍，不按平台拆分。严格遵守用户给出的字数、数量、语气和内容约束。',
         },
         {
           role: 'user',
-          content: `风格：${styleLabelMap[form.style]}\n增强 Prompt：${optimizedPrompt}`,
+          content: buildPersonaInstruction(optimizedPrompt, form.style, assetTypes, assetConfigs, context),
         },
       ],
     }
@@ -512,21 +437,26 @@ export class AIService {
 
     const content = await this.generateText(request)
 
-    return parsePersonaTextIdentity(content, form.style)
+    return parsePersonaTextIdentity(content, form.style, assetConfigs, context)
   }
 
   async generateCompletePersona(options: CompletePersonaOptions): Promise<PersonaBrand> {
     const now = new Date().toISOString()
     const id = createId('brand')
+    const assetTypes = getRequestedAssetTypes(options.form)
+    const assetConfigs = getAssetConfigs(options.form)
     const identity = await this.generatePersonaTextIdentity(options.form, options.signal, options.onTextDelta)
-    const imagePrompt = identity.imagePrompt || buildLocalOptimizedPrompt(options.form.prompt, options.form.style)
-    let imageUrls: string[]
+    const imagePrompt = buildImagePrompt(
+      identity.imagePrompt || buildLocalOptimizedPrompt(options.form.prompt, options.form.style),
+      assetConfigs.avatar,
+    )
+    let imageUrls: string[] = []
 
-    if (this.hasImageCredentials()) {
+    if (assetTypes.includes('avatar') && this.hasImageCredentials()) {
       const imageOptions: ImageGenerationOptions = {
           prompt: imagePrompt,
-          count: getImageCount(options.form),
-          size: getImageSize(options.form),
+          count: assetConfigs.avatar.imageCount,
+          size: assetConfigs.avatar.imageSize,
         }
 
       if (options.signal) {
@@ -538,8 +468,8 @@ export class AIService {
       }
 
       imageUrls = await this.generateImages(imageOptions)
-    } else {
-      imageUrls = createLocalImageUrls(id, options.form.style, imagePrompt)
+    } else if (assetTypes.includes('avatar')) {
+      imageUrls = createLocalImageUrls(id, options.form.style, imagePrompt, assetConfigs.avatar.imageCount)
     }
 
     const avatars = imageUrls.map<AvatarVariant>((url, index) => ({
@@ -556,13 +486,16 @@ export class AIService {
       avatarUrl: avatars[0]?.url ?? '',
       avatarUrls: avatars.map((avatar) => avatar.url),
       selectedAvatarId: avatars[0]?.id ?? '',
-      nicknames: [identity.nickname, identity.username],
+      nicknames: identity.nicknames,
       nickname: identity.nickname,
       username: identity.username,
       signature: identity.signature,
       bio: identity.bio,
       bios: identity.bios,
       tags: identity.tags,
+      assetTypes,
+      assetConfigs,
+      generationContext: getGenerationContext(options.form),
       params: createDefaultParams(options.form),
       createdAt: now,
       updatedAt: now,
@@ -584,7 +517,6 @@ export class AIService {
 
       const request: RequestInit = {
         method: 'GET',
-        headers: this.createHeaders(this.config.image.apiKey),
       }
 
       if (options.signal) {
@@ -613,19 +545,19 @@ export class AIService {
     throw new AIServiceError('图像生成超时', 'provider')
   }
 
-  private createHeaders(apiKey: string): HeadersInit {
+  private createHeaders(): HeadersInit {
     return {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
     }
   }
 
   private hasTextCredentials() {
-    return Boolean(this.config.text.apiKey && this.config.text.baseUrl && this.config.text.model)
+    // An empty base URL intentionally means same-origin /api through the Vite or Vercel proxy.
+    return this.config.text.enabled
   }
 
   private hasImageCredentials() {
-    return Boolean(this.config.image.apiKey && this.config.image.baseUrl && this.config.image.model)
+    return this.config.image.enabled
   }
 
   canGenerateImages() {
@@ -634,91 +566,39 @@ export class AIService {
 
   private assertTextConfig() {
     if (!this.hasTextCredentials()) {
-      throw new AIServiceError('缺少文本模型配置，请检查 VITE_AI_TEXT_API_KEY / VITE_AI_TEXT_BASE_URL / VITE_AI_TEXT_MODEL', 'config')
+      throw new AIServiceError('真实 AI 服务尚未启用，请检查 VITE_USE_REAL_AI 和 VITE_API_BASE_URL', 'config')
     }
   }
 
   private assertImageConfig() {
     if (!this.hasImageCredentials()) {
-      throw new AIServiceError('缺少图像模型配置，请检查 VITE_AI_IMAGE_API_KEY / VITE_AI_IMAGE_BASE_URL / VITE_AI_IMAGE_MODEL', 'config')
+      throw new AIServiceError('图像生成服务尚未启用，请检查 VITE_ENABLE_REAL_IMAGE', 'config')
     }
   }
 }
 
 export function createAIConfigFromEnv(): AIServiceConfig {
-  const textProvider = readEnv('VITE_AI_TEXT_PROVIDER', 'doubao') as AIProvider
-  const imageProvider = readEnv('VITE_AI_IMAGE_PROVIDER', 'doubao') as AIProvider
+  const apiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
+  const realAIEnabled = readBooleanEnv(import.meta.env.VITE_USE_REAL_AI, false)
 
   return {
     text: {
-      provider: textProvider,
-      apiKey: readEnv('VITE_AI_TEXT_API_KEY'),
-      baseUrl: readEnv('VITE_AI_TEXT_BASE_URL', defaultBaseUrl(textProvider)),
-      model: readEnv('VITE_AI_TEXT_MODEL', defaultTextModel(textProvider)),
-      chatPath: readEnv('VITE_AI_TEXT_CHAT_PATH', defaultChatPath(textProvider)),
-      responseFormatEnabled: readBooleanEnv('VITE_AI_TEXT_RESPONSE_FORMAT_ENABLED', textProvider !== 'doubao'),
+      enabled: realAIEnabled,
+      baseUrl: apiBaseUrl,
+      chatPath: '/api/ai/text',
+      responseFormatEnabled: readBooleanEnv(import.meta.env.VITE_AI_TEXT_RESPONSE_FORMAT_ENABLED, false),
     },
     image: {
-      provider: imageProvider,
-      apiKey: readEnv('VITE_AI_IMAGE_API_KEY'),
-      baseUrl: readEnv('VITE_AI_IMAGE_BASE_URL', defaultBaseUrl(imageProvider)),
-      model: readEnv('VITE_AI_IMAGE_MODEL', defaultImageModel(imageProvider)),
-      generationPath: readEnv('VITE_AI_IMAGE_GENERATION_PATH', defaultImageGenerationPath(imageProvider)),
-      editPath: readEnv('VITE_AI_IMAGE_EDIT_PATH', '/v1/images/edits'),
-      pollPath: readEnv('VITE_AI_IMAGE_POLL_PATH'),
+      enabled: realAIEnabled && readBooleanEnv(import.meta.env.VITE_ENABLE_REAL_IMAGE, false),
+      baseUrl: apiBaseUrl,
+      generationPath: '/api/ai/image',
+      pollPath: '/api/ai/image/tasks/:taskId',
     },
-    maxConcurrency: Number(readEnv('VITE_AI_MAX_CONCURRENCY', '2')),
-    retryCount: Number(readEnv('VITE_AI_RETRY_COUNT', '2')),
-    retryBaseDelayMs: Number(readEnv('VITE_AI_RETRY_BASE_DELAY_MS', '700')),
-    requestTimeoutMs: Number(readEnv('VITE_AI_REQUEST_TIMEOUT_MS', '45000')),
+    maxConcurrency: Number(import.meta.env.VITE_AI_MAX_CONCURRENCY || '2'),
+    retryCount: Number(import.meta.env.VITE_AI_RETRY_COUNT || '2'),
+    retryBaseDelayMs: Number(import.meta.env.VITE_AI_RETRY_BASE_DELAY_MS || '700'),
+    requestTimeoutMs: Number(import.meta.env.VITE_AI_REQUEST_TIMEOUT_MS || '120000'),
   }
-}
-
-function defaultBaseUrl(provider: AIProvider) {
-  const baseUrls: Partial<Record<AIProvider, string>> = {
-    doubao: 'https://ark.cn-beijing.volces.com/api/v3',
-    deepseek: 'https://api.deepseek.com',
-    dashscope: 'https://dashscope.aliyuncs.com/compatible-mode',
-    siliconflow: 'https://api.siliconflow.cn',
-    'openai-compatible': '',
-    custom: '',
-  }
-
-  return baseUrls[provider] ?? ''
-}
-
-function defaultTextModel(provider: AIProvider) {
-  const models: Partial<Record<AIProvider, string>> = {
-    doubao: 'doubao-seed-2-0-pro-260215',
-    deepseek: 'deepseek-chat',
-    dashscope: 'qwen-plus',
-    siliconflow: 'Qwen/Qwen2.5-72B-Instruct',
-    'openai-compatible': '',
-    custom: '',
-  }
-
-  return models[provider] ?? ''
-}
-
-function defaultImageModel(provider: AIProvider) {
-  const models: Partial<Record<AIProvider, string>> = {
-    doubao: '',
-    siliconflow: 'black-forest-labs/FLUX.1-schnell',
-    dashscope: 'wanx2.1-t2i-turbo',
-    deepseek: '',
-    'openai-compatible': '',
-    custom: '',
-  }
-
-  return models[provider] ?? ''
-}
-
-function defaultChatPath(provider: AIProvider) {
-  return provider === 'doubao' ? '/chat/completions' : '/v1/chat/completions'
-}
-
-function defaultImageGenerationPath(provider: AIProvider) {
-  return provider === 'doubao' ? '/images/generations' : '/v1/images/generations'
 }
 
 export const aiService = new AIService()
@@ -775,19 +655,32 @@ async function readOpenAICompatibleStream(response: Response, onDelta: NonNullab
   return fullText
 }
 
-function parsePersonaTextIdentity(raw: string, style: PersonaStyle): PersonaTextIdentity {
+function parsePersonaTextIdentity(
+  raw: string,
+  style: PersonaStyle,
+  configs: AssetConfigState,
+  context: GenerationContext,
+): PersonaTextIdentity {
   try {
     const parsed = JSON.parse(extractJson(raw)) as Partial<PersonaTextIdentity>
-    const fallback = createLocalTextIdentity(raw, style)
+    const fallback = createLocalTextIdentity(raw, style, configs, context)
     const bio = parsed.bio || parsed.bios?.[0]?.content || fallback.bio
+    const nicknames = Array.isArray(parsed.nicknames) && parsed.nicknames.length > 0
+      ? parsed.nicknames.slice(0, configs.identity.candidateCount)
+      : fallback.nicknames
+    const nickname = parsed.nickname || nicknames[0] || fallback.nickname
 
     return {
-      nickname: parsed.nickname || fallback.nickname,
+      nickname,
+      nicknames: [nickname, ...nicknames.filter((item) => item !== nickname)].slice(0, configs.identity.candidateCount),
       username: parsed.username || fallback.username,
       signature: parsed.signature || fallback.signature,
       bio,
       bios: [{ platform: '自我介绍', content: bio }],
-      tags: Array.isArray(parsed.tags) && parsed.tags.length > 0 ? parsed.tags : fallback.tags,
+      tags: formatTags(
+        Array.isArray(parsed.tags) && parsed.tags.length > 0 ? parsed.tags : fallback.tags,
+        configs.tags,
+      ),
       imagePrompt: parsed.imagePrompt || buildLocalOptimizedPrompt(raw, style),
     }
   } catch (error) {
@@ -795,8 +688,14 @@ function parsePersonaTextIdentity(raw: string, style: PersonaStyle): PersonaText
   }
 }
 
-function createLocalTextIdentity(prompt: string, style: PersonaStyle): PersonaTextIdentity {
-  const keywords = prompt
+function createLocalTextIdentity(
+  prompt: string,
+  style: PersonaStyle,
+  configs: AssetConfigState = createDefaultAssetConfigs(),
+  context: GenerationContext = createDefaultGenerationContext(),
+): PersonaTextIdentity {
+  const themeInput = prompt.match(/^主题：(.+)$/m)?.[1] ?? prompt
+  const keywords = themeInput
     .split(/[,，\s/]+/)
     .map((item) => item.trim())
     .filter(Boolean)
@@ -804,40 +703,238 @@ function createLocalTextIdentity(prompt: string, style: PersonaStyle): PersonaTe
   const base = keywords[0] ?? 'Nova'
   const styleName = styleLabelMap[style]
   const keyLine = keywords.length > 0 ? keywords.join(' / ') : 'AI / Persona / Creator'
+  const requiredKeywords = context.requiredKeywords.split(/[,，/]+/).map((item) => item.trim()).filter(Boolean)
+  const nicknameCandidates = Array.from({ length: configs.identity.candidateCount }, (_, index) => {
+    const chineseSuffixes = [styleSuffixMap[style], '创意档案', '灵感坐标', '工作室', '观察站', '方法论']
+    const englishSuffixes = ['Studio', 'Persona Lab', 'Works', 'Signal', 'Profile', 'Notes']
+    const englishName = `${capitalize(styleSlugMap[style])} ${englishSuffixes[index] ?? `Brand ${index + 1}`}`
+
+    if (configs.identity.namingStyle === 'english') {
+      return englishName
+    }
+
+    const chineseName = `${base}${chineseSuffixes[index] ?? `品牌 ${index + 1}`}`
+    return configs.identity.namingStyle === 'bilingual' ? `${chineseName} · ${englishName}` : chineseName
+  })
+  const signatureBase = createLocalSignature(keywords, styleName, configs.signature)
+  const signature = fitTextLength(signatureBase, signatureLengthRange[configs.signature.length])
+  const bioBase = createLocalBio(base, keyLine, styleName, configs.bio, context)
+  const bio = fitTextLength(bioBase, bioLengthRange[configs.bio.length])
+  const categoryTags = configs.tags.categories.map((category) => tagCategoryFallbackMap[category])
+  const localTags = formatTags([...requiredKeywords, ...keywords, styleName, ...categoryTags, ...context.brandVoice.map((voice) => voiceLabelMap[voice])], configs.tags)
+  const usernameBase = base.toLowerCase().replace(/[^\da-z\u4e00-\u9fa5]/gi, '') || 'persona'
+  const usernameSuffix = configs.identity.allowNumbers ? '26' : ''
 
   return {
-    nickname: `${base}${styleSuffixMap[style]}`,
-    username: `@${styleSlugMap[style]}_${base.toLowerCase().replace(/[^\da-z\u4e00-\u9fa5]/gi, '') || 'persona'}`,
-    signature: `以${styleName}方式表达 ${keywords[1] ?? '灵感'}，让个人品牌被一眼记住。`,
-    bio: `${styleName}人设｜围绕 ${keyLine} 持续创作，擅长把审美、经验和工具方法整理成清晰、有辨识度的个人品牌表达。`,
+    nickname: nicknameCandidates[0] ?? `${base}${styleSuffixMap[style]}`,
+    nicknames: nicknameCandidates,
+    username: `@${styleSlugMap[style]}_${usernameBase}${usernameSuffix}`,
+    signature,
+    bio,
     bios: [
       {
         platform: '自我介绍',
-        content: `${styleName}人设｜围绕 ${keyLine} 持续创作，擅长把审美、经验和工具方法整理成清晰、有辨识度的个人品牌表达。`,
+        content: bio,
       },
     ],
-    tags: [...keywords.slice(0, 4), styleName, '可识别'],
+    tags: localTags,
     imagePrompt: buildLocalOptimizedPrompt(prompt, style),
   }
 }
 
+function createLocalSignature(
+  keywords: string[],
+  styleName: string,
+  config: AssetConfigState['signature'],
+) {
+  const subject = keywords[1] ?? keywords[0] ?? '灵感'
+  const structureCopy = {
+    value: `把${subject}变成清晰、可复用的价值`,
+    expertise: `专注${subject}，用专业方法解决真实问题`,
+    attitude: `不追逐噪声，只持续表达${subject}`,
+    hybrid: `以${styleName}方式深耕${subject}，让专业被看见`,
+  } satisfies Record<AssetConfigState['signature']['structure'], string>
+  const tonePrefix = {
+    professional: '',
+    friendly: '和你一起，',
+    bold: '拒绝平庸，',
+  } satisfies Record<AssetConfigState['signature']['tone'], string>
+
+  return `${tonePrefix[config.tone]}${structureCopy[config.structure]}${config.allowEmoji ? ' ✦' : ''}`
+}
+
+function createLocalBio(
+  base: string,
+  keyLine: string,
+  styleName: string,
+  config: AssetConfigState['bio'],
+  context: GenerationContext,
+) {
+  const subject = config.voice === 'first-person' ? '我' : base
+  const sections = config.emphasis.map((emphasis) => {
+    const copy = {
+      identity: `${subject}是一名以${styleName}方式持续创作的个人品牌实践者`,
+      expertise: `长期关注 ${keyLine}，擅长把复杂经验整理成清晰方法`,
+      value: `希望为${context.audience}提供有辨识度且能够落地的内容价值`,
+      proof: '持续通过真实项目沉淀经验，并用作品验证判断',
+    } satisfies Record<AssetConfigState['bio']['emphasis'][number], string>
+    return copy[emphasis]
+  })
+
+  return `${sections.join('。')}。${config.includeCta ? '欢迎交流想法与合作机会。' : ''}${config.customInstruction ? ` ${config.customInstruction}` : ''}`
+}
+
 function createDefaultParams(form: PersonaForm | PersonaGenerationParams): PersonaGenerationParams {
+  const configs = getAssetConfigs(form)
+  const context = getGenerationContext(form)
+
   return {
     prompt: form.prompt,
     style: form.style,
-    imageCount: 'imageCount' in form ? form.imageCount : 3,
-    imageSize: 'imageSize' in form ? form.imageSize : '1024x1024',
+    imageCount: configs.avatar.imageCount,
+    imageSize: configs.avatar.imageSize,
     creativity: 'creativity' in form ? form.creativity : 0.75,
-    outputLanguage: 'outputLanguage' in form ? form.outputLanguage : 'zh-CN',
+    outputLanguage: context.language === 'en-US' ? 'en-US' : 'zh-CN',
+    assetTypes: getRequestedAssetTypes(form),
+    assetConfigs: configs,
+    generationContext: context,
   }
 }
 
-function getImageCount(form: PersonaForm | PersonaGenerationParams) {
-  return 'imageCount' in form ? form.imageCount : 3
+function getCreativity(form: PersonaForm | PersonaGenerationParams) {
+  return 'creativity' in form ? form.creativity : 0.75
 }
 
-function getImageSize(form: PersonaForm | PersonaGenerationParams) {
-  return 'imageSize' in form ? form.imageSize : '1024x1024'
+function getRequestedAssetTypes(form: PersonaForm | PersonaGenerationParams): AssetType[] {
+  const requested = (form as PersonaGenerationParams).assetTypes
+  return requested?.length ? [...requested] : ['identity', 'avatar', 'signature', 'bio', 'tags']
+}
+
+function getAssetConfigs(form: PersonaForm | PersonaGenerationParams): AssetConfigState {
+  const defaults = createDefaultAssetConfigs()
+  const saved = (form as PersonaGenerationParams).assetConfigs
+
+  return {
+    identity: { ...defaults.identity, ...saved?.identity },
+    avatar: { ...defaults.avatar, ...saved?.avatar },
+    signature: { ...defaults.signature, ...saved?.signature },
+    bio: {
+      ...defaults.bio,
+      ...saved?.bio,
+      emphasis: [...(saved?.bio?.emphasis ?? defaults.bio.emphasis)],
+    },
+    tags: {
+      ...defaults.tags,
+      ...saved?.tags,
+      categories: [...(saved?.tags?.categories ?? defaults.tags.categories)],
+    },
+  }
+}
+
+function getGenerationContext(form: PersonaForm | PersonaGenerationParams): GenerationContext {
+  const defaults = createDefaultGenerationContext()
+  const saved = (form as PersonaGenerationParams).generationContext
+
+  return {
+    ...defaults,
+    ...saved,
+    brandVoice: [...(saved?.brandVoice ?? defaults.brandVoice)],
+  }
+}
+
+function buildPersonaInstruction(
+  optimizedPrompt: string,
+  style: PersonaStyle,
+  assetTypes: AssetType[],
+  configs: AssetConfigState,
+  context: GenerationContext,
+) {
+  const requirements: string[] = []
+
+  if (assetTypes.includes('identity')) {
+    requirements.push(
+      `名称与用户名：生成 ${configs.identity.candidateCount} 个候选昵称；命名倾向为${identityNamingLabelMap[configs.identity.namingStyle]}；辨识程度为${identityMemorabilityLabelMap[configs.identity.memorability]}；账号名${configs.identity.allowNumbers ? '可以' : '不允许'}包含数字。${configs.identity.customInstruction}`,
+    )
+  }
+
+  if (assetTypes.includes('signature')) {
+    requirements.push(
+      `社交签名：${signatureLengthLabelMap[configs.signature.length]}；语气为${signatureToneLabelMap[configs.signature.tone]}；结构为${signatureStructureLabelMap[configs.signature.structure]}；${configs.signature.allowEmoji ? '允许最多一个恰当 Emoji' : '不要使用 Emoji'}。${configs.signature.customInstruction}`,
+    )
+  }
+
+  if (assetTypes.includes('bio')) {
+    requirements.push(
+      `个人简介：${bioLengthLabelMap[configs.bio.length]}；使用${configs.bio.voice === 'first-person' ? '第一人称' : '第三人称'}；重点覆盖${configs.bio.emphasis.map((item) => bioEmphasisLabelMap[item]).join('、')}；${configs.bio.includeCta ? '结尾包含自然的行动引导' : '不要添加营销式行动引导'}。${configs.bio.customInstruction}`,
+    )
+  }
+
+  if (assetTypes.includes('tags')) {
+    requirements.push(
+      `关键词标签：严格生成 ${configs.tags.count} 个；范围为${tagDensityLabelMap[configs.tags.density]}；包含${configs.tags.categories.map((item) => tagCategoryLabelMap[item]).join('、')}；${configs.tags.format === 'hashtag' ? '每项以 # 开头' : '不要添加 #'}。${configs.tags.customInstruction}`,
+    )
+  }
+
+  if (assetTypes.includes('avatar')) {
+    requirements.push(`头像 Prompt：${buildImagePrompt('主体清晰、可识别，适合个人品牌头像', configs.avatar)}`)
+  }
+
+  return [
+    `本次生成内容：${assetTypes.map((type) => assetTypeLabelMap[type]).join('、')}`,
+    `使用目标：${goalLabelMap[context.goal]}`,
+    `目标受众：${context.audience}`,
+    `品牌语气：${context.brandVoice.map((voice) => voiceLabelMap[voice]).join('、')}`,
+    `输出语言：${languageLabelMap[context.language]}`,
+    `整体风格：${styleLabelMap[style]}`,
+    context.requiredKeywords ? `必须自然包含：${context.requiredKeywords}` : '',
+    context.excludedKeywords ? `禁止出现：${context.excludedKeywords}` : '',
+    ...requirements,
+    `品牌简述：\n${optimizedPrompt}`,
+  ].filter(Boolean).join('\n')
+}
+
+function formatTags(tags: string[], config: AssetConfigState['tags']) {
+  const normalized = [...new Set(tags.map((tag) => tag.trim().replace(/^#+/, '')).filter(Boolean))]
+  const filled = [...normalized]
+
+  while (filled.length < config.count) {
+    filled.push(`品牌关键词${filled.length + 1}`)
+  }
+
+  return filled.slice(0, config.count).map((tag) => config.format === 'hashtag' ? `#${tag}` : tag)
+}
+
+function fitTextLength(text: string, [min, max]: readonly [number, number]) {
+  const filler = '持续输出有价值、可识别的内容表达。'
+  let result = text
+
+  while (result.length < min) {
+    result += filler
+  }
+
+  return result.length > max ? `${result.slice(0, Math.max(1, max - 1))}。` : result
+}
+
+function capitalize(value: string) {
+  return value ? `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}` : value
+}
+
+function mapCreativityToTemperature(creativity: number) {
+  return Math.min(0.85, Math.max(0.25, 0.25 + creativity * 0.6))
+}
+
+function buildImagePrompt(prompt: string, config: AssetConfigState['avatar']) {
+  const medium = avatarMediumLabelMap[config.medium]
+  const framing = avatarFramingLabelMap[config.framing]
+  const background = avatarBackgroundLabelMap[config.background]
+  const variety = avatarVarietyLabelMap[config.variety]
+
+  return [
+    prompt,
+    `视觉媒介：${medium}；人物构图：${framing}；背景：${background}。`,
+    `风格强度：${config.styleStrength.toFixed(2)}；变体策略：${variety}。`,
+    config.customInstruction ? `额外要求：${config.customInstruction}` : '',
+  ].filter(Boolean).join('\n')
 }
 
 function buildLocalOptimizedPrompt(input: string, style: PersonaStyle) {
@@ -850,7 +947,7 @@ function buildLocalOptimizedPrompt(input: string, style: PersonaStyle) {
   ].join('\n')
 }
 
-function createLocalImageUrls(id: string, style: PersonaStyle, prompt: string) {
+function createLocalImageUrls(id: string, style: PersonaStyle, prompt: string, count = 3) {
   const collectionMap: Record<PersonaStyle, string> = {
     cyberpunk: 'bottts-neutral',
     anime: 'adventurer',
@@ -860,7 +957,7 @@ function createLocalImageUrls(id: string, style: PersonaStyle, prompt: string) {
     minimal: 'shapes',
   }
 
-  return [0, 1, 2].map((index) => {
+  return Array.from({ length: count }, (_, index) => {
     const seed = encodeURIComponent(`${style}-${prompt}-${id}-${index}`)
     return `https://api.dicebear.com/9.x/${collectionMap[style]}/svg?seed=${seed}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`
   })
@@ -877,19 +974,6 @@ function extractImageUrls(payload: ImageGenerationResponse | ImagePollResponse):
     .filter(Boolean)
 
   return [...direct, ...(payload.urls ?? [])]
-}
-
-function dataUrlToBlob(dataUrl: string) {
-  const [header, payload] = dataUrl.split(',')
-  const mime = header?.match(/data:(.*?);base64/)?.[1] ?? 'image/png'
-  const binary = atob(payload ?? '')
-  const bytes = new Uint8Array(binary.length)
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-
-  return new Blob([bytes], { type: mime })
 }
 
 function extractJson(input: string) {
@@ -965,6 +1049,11 @@ async function assertResponse(response: Response) {
 
 function joinUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`
+}
+
+function normalizeApiBaseUrl(baseUrl: string | undefined) {
+  // Accept legacy values such as "/api" while keeping route paths centralized below.
+  return (baseUrl ?? '').trim().replace(/\/api\/?$/, '')
 }
 
 function delay(ms: number, signal?: AbortSignal) {
@@ -1043,13 +1132,7 @@ function normalizeError(error: unknown) {
   return new AIServiceError(error instanceof Error ? error.message : 'AI 服务异常', 'network', error)
 }
 
-function readEnv(key: string, fallback = '') {
-  return (import.meta.env[key] as string | undefined) || fallback
-}
-
-function readBooleanEnv(key: string, fallback = false) {
-  const value = readEnv(key)
-
+function readBooleanEnv(value: string | undefined, fallback = false) {
   if (!value) {
     return fallback
   }
@@ -1082,4 +1165,137 @@ const styleSlugMap: Record<PersonaStyle, string> = {
   professional: 'pro',
   xiaohongshu: 'daily',
   minimal: 'mono',
+}
+
+const assetTypeLabelMap: Record<AssetType, string> = {
+  identity: '名称与用户名',
+  avatar: '头像',
+  signature: '社交签名',
+  bio: '个人简介',
+  tags: '关键词标签',
+}
+
+const goalLabelMap: Record<GenerationContext['goal'], string> = {
+  'personal-brand': '打造个人品牌',
+  'job-search': '求职与职业展示',
+  creator: '内容创作',
+  freelance: '自由职业获客',
+  founder: '创始人形象',
+}
+
+const voiceLabelMap: Record<GenerationContext['brandVoice'][number], string> = {
+  professional: '专业',
+  friendly: '亲和',
+  restrained: '克制',
+  bold: '鲜明',
+  warm: '温暖',
+  witty: '幽默',
+}
+
+const languageLabelMap: Record<GenerationContext['language'], string> = {
+  'zh-CN': '简体中文',
+  'en-US': '英文',
+  bilingual: '中英结合',
+}
+
+const identityNamingLabelMap: Record<AssetConfigState['identity']['namingStyle'], string> = {
+  chinese: '中文为主',
+  bilingual: '中英结合',
+  english: '英文为主',
+}
+
+const identityMemorabilityLabelMap: Record<AssetConfigState['identity']['memorability'], string> = {
+  stable: '稳妥易懂',
+  balanced: '平衡',
+  distinctive: '鲜明独特',
+}
+
+const signatureLengthRange = {
+  short: [6, 14],
+  medium: [15, 28],
+  long: [29, 45],
+} as const
+
+const signatureLengthLabelMap: Record<AssetConfigState['signature']['length'], string> = {
+  short: '6-14 字',
+  medium: '15-28 字',
+  long: '29-45 字',
+}
+
+const signatureToneLabelMap: Record<AssetConfigState['signature']['tone'], string> = {
+  professional: '专业',
+  friendly: '亲和',
+  bold: '鲜明',
+}
+
+const signatureStructureLabelMap: Record<AssetConfigState['signature']['structure'], string> = {
+  value: '突出提供的价值',
+  expertise: '突出专业能力',
+  attitude: '表达态度主张',
+  hybrid: '综合表达',
+}
+
+const bioLengthRange = {
+  short: [50, 80],
+  medium: [100, 150],
+  long: [180, 260],
+} as const
+
+const bioLengthLabelMap: Record<AssetConfigState['bio']['length'], string> = {
+  short: '50-80 字',
+  medium: '100-150 字',
+  long: '180-260 字',
+}
+
+const bioEmphasisLabelMap: Record<AssetConfigState['bio']['emphasis'][number], string> = {
+  identity: '身份定位',
+  expertise: '专业能力',
+  value: '提供价值',
+  proof: '经历成果',
+}
+
+const tagDensityLabelMap: Record<AssetConfigState['tags']['density'], string> = {
+  focused: '高度聚焦',
+  balanced: '平衡',
+  broad: '适度扩展',
+}
+
+const tagCategoryLabelMap: Record<AssetConfigState['tags']['categories'][number], string> = {
+  identity: '身份定位',
+  expertise: '专业能力',
+  topic: '内容主题',
+  personality: '个性特征',
+}
+
+const tagCategoryFallbackMap: Record<AssetConfigState['tags']['categories'][number], string> = {
+  identity: '个人品牌',
+  expertise: '专业方法',
+  topic: '内容创作',
+  personality: '真诚表达',
+}
+
+const avatarMediumLabelMap: Record<AssetConfigState['avatar']['medium'], string> = {
+  photo: '写实摄影',
+  illustration: '高质量数字插画',
+  anime: '日系动漫',
+  '3d': '精致 3D 角色',
+  flat: '现代扁平设计',
+}
+
+const avatarFramingLabelMap: Record<AssetConfigState['avatar']['framing'], string> = {
+  headshot: '头像特写',
+  bust: '半身肖像',
+  'half-body': '上半身场景',
+}
+
+const avatarBackgroundLabelMap: Record<AssetConfigState['avatar']['background'], string> = {
+  minimal: '极简留白',
+  gradient: '品牌渐变',
+  scene: '轻量环境场景',
+}
+
+const avatarVarietyLabelMap: Record<AssetConfigState['avatar']['variety'], string> = {
+  subtle: '保持角色高度一致，只做细节变化',
+  balanced: '保持识别度并适度变化',
+  diverse: '明显改变构图与视觉细节',
 }

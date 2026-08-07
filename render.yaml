@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: astra-persona-api
+    runtime: node
+    plan: free
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm server:build
+    startCommand: pnpm server:start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ARK_API_KEY
+        sync: false
+      - key: ARK_BASE_URL
+        value: https://ark.cn-beijing.volces.com/api/v3
+      - key: ARK_TEXT_MODEL
+        value: doubao-seed-2-0-pro-260215
+      - key: ARK_TEXT_CHAT_PATH
+        value: /chat/completions
+      - key: ARK_IMAGE_API_KEY
+        sync: false
+      - key: ARK_IMAGE_MODEL
+        sync: false
+      - key: ARK_IMAGE_GENERATION_PATH
+        value: /images/generations
+      - key: ARK_IMAGE_POLL_PATH
+        sync: false
+      - key: AI_REQUEST_TIMEOUT_MS
+        value: 120000

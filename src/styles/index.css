@@ -61,6 +61,87 @@
       rgb(2 6 23 / 0.54);
   }
 
+  .workspace-panel {
+    @apply relative min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.075] shadow-soft backdrop-blur-xl transition duration-300 dark:bg-slate-950/35;
+    grid-template-columns: minmax(0, 1fr);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.11),
+      0 24px 80px -54px rgb(15 23 42 / 0.72);
+  }
+
+  .workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-panel::before {
+    content: '';
+    @apply pointer-events-none absolute inset-x-5 top-0 h-px opacity-40 transition duration-300;
+    background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.7), transparent);
+  }
+
+  .workspace-panel-active {
+    @apply border-primary/45 bg-primary/[0.055];
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.16),
+      0 0 0 1px hsl(var(--primary) / 0.16),
+      0 28px 92px -48px hsl(var(--primary) / 0.74);
+  }
+
+  .workspace-panel-active::before {
+    @apply opacity-100;
+  }
+
+  .workspace-step {
+    @apply grid size-9 shrink-0 place-items-center rounded-lg border border-primary/25 bg-primary/10 text-xs font-semibold text-primary;
+  }
+
+  .workspace-status {
+    @apply shrink-0 whitespace-nowrap rounded-md border border-white/10 bg-card/50 px-2.5 py-1 text-xs font-medium text-muted-foreground;
+  }
+
+  .workspace-panel-active .workspace-status {
+    @apply border-primary/25 bg-primary/10 text-primary;
+  }
+
+  .config-section {
+    @apply rounded-lg border border-white/10 bg-background/35 p-3.5 transition duration-200;
+  }
+
+  .config-section:hover {
+    @apply border-primary/20 bg-card/45;
+  }
+
+  .config-section-open {
+    @apply border-primary/30 bg-primary/[0.045];
+    box-shadow: 0 18px 58px -48px hsl(var(--primary) / 0.65);
+  }
+
+  .generation-action-bar {
+    @apply sticky bottom-0 z-20 mt-1 flex w-full min-w-0 max-w-full items-center justify-between gap-3 rounded-lg border border-primary/25 bg-card/90 p-3 backdrop-blur-xl;
+    box-shadow: 0 -18px 50px -38px hsl(var(--primary) / 0.7);
+  }
+
+  .asset-result-card {
+    @apply relative z-10 rounded-lg border border-white/10 bg-background/55 p-4 transition duration-200;
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.045);
+  }
+
+  .asset-result-card:hover,
+  .asset-result-card:focus-within {
+    @apply border-primary/25 bg-card/70;
+    box-shadow:
+      inset 0 1px 0 hsl(var(--foreground) / 0.06),
+      0 18px 60px -48px hsl(var(--primary) / 0.72);
+  }
+
+  .result-empty-state {
+    @apply grid min-h-[360px] place-items-center content-center gap-5 rounded-lg border border-dashed border-white/15 bg-background/30 p-6 text-center;
+  }
+
+  .icon-button {
+    @apply grid size-9 shrink-0 place-items-center rounded-md border border-white/10 bg-card/45 text-muted-foreground transition hover:border-primary/25 hover:bg-primary/10 hover:text-primary;
+  }
+
   .subtle-scrollbar {
     scrollbar-width: thin;
     scrollbar-color: transparent transparent;
@@ -94,6 +175,16 @@
     background-color: hsl(var(--foreground) / 0.28);
   }
 
+  .history-drawer-body {
+    height: 100%;
+    min-height: 0;
+    padding: 20px !important;
+  }
+
+  .n-button {
+    touch-action: manipulation;
+  }
+
   * {
     @apply border-border;
   }
@@ -123,6 +214,33 @@
   @media (max-width: 640px) {
     body {
       overscroll-behavior-y: none;
+    }
+
+    .generation-action-bar {
+      @apply -mx-1 px-3 py-2.5;
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .workspace-grid {
+      grid-template-columns: minmax(270px, 24fr) minmax(360px, 32fr) minmax(390px, 44fr);
+      transition: grid-template-columns 260ms ease;
+    }
+
+    .workspace-grid[data-active='select'] {
+      grid-template-columns: minmax(300px, 29fr) minmax(350px, 31fr) minmax(390px, 40fr);
+    }
+
+    .workspace-grid[data-active='config'] {
+      grid-template-columns: minmax(270px, 23fr) minmax(410px, 38fr) minmax(390px, 39fr);
+    }
+
+    .workspace-grid[data-active='preview'] {
+      grid-template-columns: minmax(270px, 22fr) minmax(360px, 30fr) minmax(440px, 48fr);
+    }
+
+    .workspace-grid .workspace-panel:not(.workspace-panel-active) {
+      opacity: 0.88;
     }
   }
 }

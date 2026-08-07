@@ -1,18 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
-  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
-  <path d="M19 47L31.2 16.5C31.9 14.8 34.1 14.8 34.8 16.5L47 47H39.7L37.4 40.7H28.4L30.5 34.9H35.3L33 28.2L25.9 47H19Z" fill="white"/>
-  <path d="M15 22.5C23.4 15.2 40.4 13.7 49 20.4" stroke="url(#orbit)" stroke-width="2.2" stroke-linecap="round"/>
-  <circle cx="49.5" cy="20.8" r="3.2" fill="#9CA3FF"/>
-  <defs>
-    <linearGradient id="bg" x1="8" y1="7" x2="57" y2="59" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#14B8A6"/>
-      <stop offset="0.52" stop-color="#111827"/>
-      <stop offset="1" stop-color="#6366F1"/>
-    </linearGradient>
-    <linearGradient id="orbit" x1="15" y1="17" x2="50" y2="17" gradientUnits="userSpaceOnUse">
-      <stop stop-color="white" stop-opacity="0"/>
-      <stop offset="0.52" stop-color="white" stop-opacity="0.9"/>
-      <stop offset="1" stop-color="#A5B4FC"/>
-    </linearGradient>
-  </defs>
+  <path d="M16.5 43.5L32 13.2L47.5 43.5" stroke="#14B8A6" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24.2 33.2H39.8" stroke="#14B8A6" stroke-width="3.4" stroke-linecap="round" opacity="0.78"/>
+  <path d="M9.8 26.4C18 15.6 44.8 13.9 54 25.1" stroke="#94A3B8" stroke-width="2.4" stroke-linecap="round" opacity="0.84"/>
+  <circle cx="54" cy="25.1" r="3.8" fill="#14B8A6"/>
+  <path d="M15.5 50C26.5 57.1 39.2 56.2 49.3 48.4" stroke="#818CF8" stroke-width="2.5" stroke-linecap="round" opacity="0.72"/>
+  <path d="M32 45.2C36.1 45.2 39.4 41.9 39.4 37.8C39.4 33.7 36.1 30.4 32 30.4C27.9 30.4 24.6 33.7 24.6 37.8C24.6 41.9 27.9 45.2 32 45.2Z" fill="#0F172A" opacity="0.92"/>
+  <path d="M26.5 51.4C27.8 48.9 29.8 47.5 32 47.5C34.2 47.5 36.2 48.9 37.5 51.4" stroke="#0F172A" stroke-width="3" stroke-linecap="round" opacity="0.92"/>
 </svg>

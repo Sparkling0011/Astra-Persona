@@ -1,61 +1,157 @@
 <script setup lang="ts">
-import { Trash2, X } from '@lucide/vue'
+import { Search, Trash2 } from '@lucide/vue'
+import { NButton, NDrawer, NDrawerContent, NInput, NModal, NVirtualList } from 'naive-ui'
 import { storeToRefs } from 'pinia'
+import { computed, ref, watch } from 'vue'
 
-import BaseButton from '@/components/ui/BaseButton.vue'
-import VirtualList from '@/components/ui/VirtualList.vue'
 import { usePersonaStore } from '@/stores/persona'
+import type { PersonaBrand } from '@/types/persona'
 
 const personaStore = usePersonaStore()
 const { brands, activeBrandId, isHistoryOpen } = storeToRefs(personaStore)
+const searchKeyword = ref('')
+const pendingBrand = ref<PersonaBrand | null>(null)
+
+const filteredBrands = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+
+  if (!keyword) {
+    return brands.value
+  }
+
+  return brands.value.filter((brand) => {
+    const searchableText = [
+      brand.nickname,
+      brand.username,
+      brand.prompt,
+      brand.signature,
+      brand.bio,
+      ...brand.tags,
+      ...brand.bios.map((bio) => bio.content),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return searchableText.includes(keyword)
+  })
+})
+
+const confirmationText = computed(() =>
+  pendingBrand.value
+    ? `当前工作区会切换为“${pendingBrand.value.nickname}”，现有输入、内容选择和参数配置将被这条历史记录替换。已保存的历史记录不会被删除。`
+    : '',
+)
+
+function requestSelectBrand(brand: PersonaBrand) {
+  if (brand.id === activeBrandId.value) {
+    personaStore.closeHistory()
+    return
+  }
+
+  pendingBrand.value = brand
+}
+
+function confirmSelectBrand() {
+  if (!pendingBrand.value) {
+    return
+  }
+
+  personaStore.selectBrand(pendingBrand.value.id)
+  pendingBrand.value = null
+}
+
+function cancelSelectBrand() {
+  pendingBrand.value = null
+}
+
+function handleHistoryVisibility(show: boolean) {
+  if (!show) {
+    personaStore.closeHistory()
+  }
+}
+
+watch(isHistoryOpen, (open) => {
+  if (!open) {
+    pendingBrand.value = null
+  }
+})
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="isHistoryOpen" class="fixed inset-0 z-40">
-      <button class="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" aria-label="关闭资产库" @click="personaStore.closeHistory" />
-
-      <aside class="absolute right-0 top-0 h-full w-full max-w-md border-l border-border bg-background p-5 shadow-soft">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <h2 class="text-lg font-semibold">资产库</h2>
-            <p class="mt-1 text-sm text-muted-foreground">本机保存，可随时恢复编辑。</p>
-          </div>
-          <BaseButton variant="secondary" @click="personaStore.closeHistory">
-            <X class="size-4" />
-          </BaseButton>
-        </div>
-
-        <div class="mt-5">
-          <VirtualList v-if="brands.length" :items="brands" :item-height="118" :height="620">
-            <template #default="{ item: brand }">
-              <article
-                class="rounded-lg border p-3 transition"
-                :class="brand.id === activeBrandId ? 'border-primary bg-primary/10' : 'border-border bg-card'"
-              >
-                <button class="flex min-h-14 w-full touch-manipulation items-center gap-3 text-left" @click="personaStore.selectBrand(brand.id)">
-                  <img class="size-14 rounded-md bg-muted p-1" :src="brand.avatars[0]?.url" :alt="brand.nickname" loading="lazy" decoding="async" />
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate font-medium">{{ brand.nickname }}</span>
-                    <span class="mt-1 block truncate text-xs text-muted-foreground">{{ brand.prompt }}</span>
-                  </span>
-                </button>
-                <div class="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{{ new Date(brand.createdAt).toLocaleString() }}</span>
-                  <button class="inline-flex min-h-10 touch-manipulation items-center gap-1 text-red-500 hover:text-red-600" @click="personaStore.removeBrand(brand.id)">
-                    <Trash2 class="size-3.5" />
-                    删除
-                  </button>
-                </div>
-              </article>
+  <NDrawer
+    :show="isHistoryOpen"
+    width="min(448px, 100vw)"
+    placement="right"
+    @update:show="handleHistoryVisibility"
+  >
+    <NDrawerContent title="历史记录" closable body-content-class="history-drawer-body">
+      <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-5">
+        <div>
+          <p class="mb-4 text-sm text-muted-foreground">搜索并恢复最近生成的个人品牌方案。</p>
+          <NInput v-model:value="searchKeyword" type="text" clearable placeholder="搜索昵称、简述、签名、Bio 或标签">
+            <template #prefix>
+              <Search class="size-4 text-muted-foreground" />
             </template>
-          </VirtualList>
-
-          <div v-if="!brands.length" class="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-            暂无资产记录。
-          </div>
+          </NInput>
         </div>
-      </aside>
-    </div>
-  </Teleport>
+
+        <NVirtualList
+          v-if="filteredBrands.length"
+          class="min-h-0"
+          :items="filteredBrands"
+          :item-size="126"
+          key-field="id"
+          item-resizable
+        >
+          <template #default="{ item: brand }">
+            <article
+              class="mb-2 rounded-lg border p-3 transition"
+              :class="brand.id === activeBrandId ? 'border-primary bg-primary/10' : 'border-border bg-card'"
+            >
+              <button class="flex min-h-14 w-full touch-manipulation items-center gap-3 text-left" @click="requestSelectBrand(brand)">
+                <img class="size-14 rounded-md bg-muted p-1" :src="brand.avatars[0]?.url" :alt="brand.nickname" loading="lazy" decoding="async" />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-medium">{{ brand.nickname }}</span>
+                  <span class="mt-1 block truncate text-xs text-muted-foreground">{{ brand.prompt }}</span>
+                </span>
+              </button>
+              <div class="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span class="truncate">{{ new Date(brand.createdAt).toLocaleString() }}</span>
+                <NButton type="error" quaternary size="small" @click="personaStore.removeBrand(brand.id)">
+                  <template #icon>
+                    <Trash2 class="size-3.5" />
+                  </template>
+                  删除
+                </NButton>
+              </div>
+            </article>
+          </template>
+        </NVirtualList>
+
+        <div v-else-if="brands.length" class="self-start rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          没有匹配的历史记录。
+        </div>
+
+        <div v-else class="self-start rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          暂无历史记录。
+        </div>
+      </div>
+    </NDrawerContent>
+  </NDrawer>
+
+  <NModal
+    :show="Boolean(pendingBrand)"
+    preset="dialog"
+    type="warning"
+    title="确认查看历史记录？"
+    :content="confirmationText"
+    positive-text="确认查看"
+    negative-text="取消"
+    :mask-closable="true"
+    @positive-click="confirmSelectBrand"
+    @negative-click="cancelSelectBrand"
+    @mask-click="cancelSelectBrand"
+    @close="cancelSelectBrand"
+  />
 </template>

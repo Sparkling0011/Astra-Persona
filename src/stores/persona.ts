@@ -5,12 +5,17 @@ import {
   generatePersona as requestGeneratePersona,
   regeneratePersonaSection,
 } from '@/api/persona'
+import { createDefaultAssetConfigs, createDefaultGenerationContext, scenarioPresets } from '@/constants/assets'
 import {
   createShareLink,
   downloadBlob,
   exportPersonaZip,
 } from '@/services/exportService'
+import { createId } from '@/utils/id'
 import type {
+  AssetConfigState,
+  AssetType,
+  GenerationContext,
   Persona,
   PersonaForm,
   PersonaGenerationParams,
@@ -50,11 +55,18 @@ export const usePersonaStore = defineStore(
       ...initialParams,
       ...form.value,
     })
-    const history = ref<Persona[]>(legacySnapshot?.brands ?? [])
+    const history = ref<Persona[]>(
+      (legacySnapshot?.brands ?? []).map((persona) =>
+        normalizePersona(persona, persona.params ?? initialParams),
+      ),
+    )
     const currentPersonaId = ref(
       legacySnapshot?.activeBrandId ?? history.value[0]?.id ?? '',
     )
     const promptHistory = ref<PromptHistoryItem[]>([])
+    const selectedAssetTypes = ref<AssetType[]>(['identity', 'avatar', 'signature', 'bio', 'tags'])
+    const assetConfigs = ref<AssetConfigState>(createDefaultAssetConfigs())
+    const generationContext = ref<GenerationContext>(createDefaultGenerationContext())
     const isHistoryOpen = ref(false)
     const isLoading = ref(false)
     const loadingMessage = ref('')
@@ -65,6 +77,7 @@ export const usePersonaStore = defineStore(
     const shareUrl = ref('')
     const shareQrCodeDataUrl = ref('')
     let progressTimer: number | undefined
+    let activeGenerationController: AbortController | undefined
 
     const currentPersona = computed(
       () =>
@@ -82,6 +95,15 @@ export const usePersonaStore = defineStore(
     const errorMessage = error
 
     importSharedPersonaFromUrl()
+    window.setTimeout(() => {
+      const hasLegacyAssetConfig = !('identity' in assetConfigs.value)
+      assetConfigs.value = normalizeAssetConfigState(assetConfigs.value)
+      generationContext.value = normalizeGenerationContext(generationContext.value)
+
+      if (hasLegacyAssetConfig && !selectedAssetTypes.value.includes('identity')) {
+        selectedAssetTypes.value = ['identity', ...selectedAssetTypes.value]
+      }
+    }, 0)
 
     async function generatePersona(
       overrides?: Partial<PersonaGenerationParams>,
@@ -94,34 +116,88 @@ export const usePersonaStore = defineStore(
         ...params.value,
         prompt: form.value.prompt,
         style: form.value.style,
+        imageCount: assetConfigs.value.avatar.imageCount,
+        imageSize: assetConfigs.value.avatar.imageSize,
+        assetTypes: ['identity', 'avatar', 'signature', 'bio', 'tags'],
+        assetConfigs: cloneAssetConfigs(assetConfigs.value),
+        generationContext: cloneGenerationContext(generationContext.value),
+        outputLanguage: generationContext.value.language === 'en-US' ? 'en-US' : 'zh-CN',
       }
 
-      beginGeneration('brand', '正在生成身份资产')
+      const signal = beginGeneration('brand', '正在生成个人品牌内容')
       addPromptHistory(form.value)
 
       try {
         const persona = normalizePersona(
-          await requestGeneratePersona(params.value),
+          await requestGeneratePersona(params.value, signal),
           params.value,
         )
-        upsertPersona(persona)
-        currentPersonaId.value = persona.id
+        const nextPersona = withGenerationSnapshot(persona, ['identity', 'avatar', 'signature', 'bio', 'tags'], assetConfigs.value, generationContext.value)
+        upsertPersona(nextPersona)
+        currentPersonaId.value = nextPersona.id
         finishGeneration()
-        return persona
+        return nextPersona
       } catch (caughtError) {
+        if (signal.aborted) {
+          return undefined
+        }
         failGeneration(caughtError, 'brand')
         return undefined
       }
     }
 
     async function createPersona() {
-      return generatePersona()
+      return generateSelectedAssets()
+    }
+
+    async function generateSelectedAssets() {
+      params.value = {
+        ...params.value,
+        prompt: form.value.prompt,
+        style: form.value.style,
+        imageCount: assetConfigs.value.avatar.imageCount,
+        imageSize: assetConfigs.value.avatar.imageSize,
+        assetTypes: [...selectedAssetTypes.value],
+        assetConfigs: cloneAssetConfigs(assetConfigs.value),
+        generationContext: cloneGenerationContext(generationContext.value),
+        outputLanguage: generationContext.value.language === 'en-US' ? 'en-US' : 'zh-CN',
+      }
+
+      const signal = beginGeneration('brand', `正在生成 ${selectedAssetTypes.value.length} 项内容`)
+      addPromptHistory(form.value)
+
+      try {
+        const generatedPersona = normalizePersona(
+          await requestGeneratePersona(params.value, signal),
+          params.value,
+        )
+        const nextPersona = mergeSelectedAssets(
+          currentPersona.value,
+          generatedPersona,
+          selectedAssetTypes.value,
+        )
+        const personaWithSnapshot = withGenerationSnapshot(
+          createHistoryEntry(nextPersona),
+          selectedAssetTypes.value,
+          assetConfigs.value,
+          generationContext.value,
+        )
+
+        upsertPersona(personaWithSnapshot)
+        currentPersonaId.value = personaWithSnapshot.id
+        finishGeneration()
+        return personaWithSnapshot
+      } catch (caughtError) {
+        if (signal.aborted) {
+          return undefined
+        }
+        failGeneration(caughtError, 'brand')
+        return undefined
+      }
     }
 
     async function retryPart(
-      section: PersonaSection = lastFailedPart.value === 'avatar' ||
-      lastFailedPart.value === 'signature' ||
-      lastFailedPart.value === 'bio'
+      section: PersonaSection = lastFailedPart.value && lastFailedPart.value !== 'brand'
         ? lastFailedPart.value
         : 'avatar',
     ) {
@@ -129,18 +205,26 @@ export const usePersonaStore = defineStore(
         return undefined
       }
 
-      beginGeneration(section, retryMessage(section))
+      const signal = beginGeneration(section, retryMessage(section))
 
       try {
-        const updatedPersona = normalizePersona(
-          await regeneratePersonaSection(currentPersona.value, section),
-          currentPersona.value.params,
+        const updatedPersona = withGenerationSnapshot(
+          normalizePersona(
+            await regeneratePersonaSection(currentPersona.value, section, signal),
+            currentPersona.value.params,
+          ),
+          getPersonaAssetTypes(currentPersona.value),
+          getPersonaAssetConfigs(currentPersona.value),
+          getPersonaGenerationContext(currentPersona.value),
         )
         upsertPersona(updatedPersona)
         currentPersonaId.value = updatedPersona.id
         finishGeneration()
         return updatedPersona
       } catch (caughtError) {
+        if (signal.aborted) {
+          return undefined
+        }
         failGeneration(caughtError, section)
         return undefined
       }
@@ -148,6 +232,38 @@ export const usePersonaStore = defineStore(
 
     async function regenerateSection(section: PersonaSection) {
       return retryPart(section)
+    }
+
+    async function regenerateAsset(type: AssetType) {
+      if (!currentPersona.value) {
+        return undefined
+      }
+
+      const section = assetToPersonaSection(type)
+      const signal = beginGeneration(section, assetRetryMessage(type))
+
+      try {
+        const updatedPersona = normalizePersona(
+          await regeneratePersonaSection(currentPersona.value, section, signal),
+          currentPersona.value.params,
+        )
+        const nextPersona = withGenerationSnapshot(
+          mergeSelectedAssets(currentPersona.value, updatedPersona, [type]),
+          getPersonaAssetTypes(currentPersona.value),
+          getPersonaAssetConfigs(currentPersona.value),
+          getPersonaGenerationContext(currentPersona.value),
+        )
+        upsertPersona(nextPersona)
+        currentPersonaId.value = nextPersona.id
+        finishGeneration()
+        return nextPersona
+      } catch (caughtError) {
+        if (signal.aborted) {
+          return undefined
+        }
+        failGeneration(caughtError, section)
+        return undefined
+      }
     }
 
     function updateParams(nextParams: Partial<PersonaGenerationParams>) {
@@ -164,6 +280,73 @@ export const usePersonaStore = defineStore(
 
     function setPrompt(prompt: string) {
       updateParams({ prompt })
+    }
+
+    function toggleAssetType(type: AssetType) {
+      if (selectedAssetTypes.value.includes(type)) {
+        if (selectedAssetTypes.value.length === 1) {
+          return
+        }
+
+        selectedAssetTypes.value = selectedAssetTypes.value.filter((item) => item !== type)
+        return
+      }
+
+      selectedAssetTypes.value = [...selectedAssetTypes.value, type]
+    }
+
+    function updateAssetConfig<T extends AssetType>(type: T, nextConfig: Partial<AssetConfigState[T]>) {
+      assetConfigs.value = {
+        ...assetConfigs.value,
+        [type]: {
+          ...assetConfigs.value[type],
+          ...nextConfig,
+        },
+      }
+
+      if (type === 'avatar') {
+        updateParams({
+          imageCount: assetConfigs.value.avatar.imageCount,
+          imageSize: assetConfigs.value.avatar.imageSize,
+        })
+      }
+    }
+
+    function updateAssetField(type: AssetType, key: string, value: unknown) {
+      const currentConfig = assetConfigs.value[type] as unknown as Record<string, unknown>
+      updateAssetConfig(type, { ...currentConfig, [key]: value } as AssetConfigState[typeof type])
+    }
+
+    function updateGenerationContext(nextContext: Partial<GenerationContext>) {
+      generationContext.value = {
+        ...generationContext.value,
+        ...nextContext,
+      }
+    }
+
+    function applyScenarioPreset(presetId: string) {
+      const preset = scenarioPresets.find((item) => item.id === presetId)
+
+      if (!preset) {
+        return
+      }
+
+      selectedAssetTypes.value = [...preset.assetTypes]
+      form.value.style = preset.style
+      params.value.style = preset.style
+      updateGenerationContext(preset.context)
+      assetConfigs.value = normalizeAssetConfigState({
+        ...assetConfigs.value,
+        identity: { ...assetConfigs.value.identity, ...preset.assetConfigs?.identity },
+        avatar: { ...assetConfigs.value.avatar, ...preset.assetConfigs?.avatar },
+        signature: { ...assetConfigs.value.signature, ...preset.assetConfigs?.signature },
+        bio: { ...assetConfigs.value.bio, ...preset.assetConfigs?.bio },
+        tags: { ...assetConfigs.value.tags, ...preset.assetConfigs?.tags },
+      })
+      updateParams({
+        imageCount: assetConfigs.value.avatar.imageCount,
+        imageSize: assetConfigs.value.avatar.imageSize,
+      })
     }
 
     function addPromptHistory(nextForm: PersonaForm) {
@@ -203,6 +386,18 @@ export const usePersonaStore = defineStore(
         ...currentPersona.value,
         selectedAvatarId: avatarId,
         avatarUrl: selectedAvatar?.url ?? currentPersona.value.avatarUrl,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+
+    function selectNickname(nickname: string) {
+      if (!currentPersona.value || !currentPersona.value.nicknames.includes(nickname)) {
+        return
+      }
+
+      replacePersona({
+        ...currentPersona.value,
+        nickname,
         updatedAt: new Date().toISOString(),
       })
     }
@@ -259,7 +454,14 @@ export const usePersonaStore = defineStore(
     }
 
     function selectPersona(personaId: string) {
+      const persona = history.value.find((item) => item.id === personaId)
+
+      if (!persona) {
+        return
+      }
+
       currentPersonaId.value = personaId
+      restoreWorkspaceFromPersona(persona)
       isHistoryOpen.value = false
     }
 
@@ -291,7 +493,7 @@ export const usePersonaStore = defineStore(
 
       const zipBlob = await exportPersonaZip(persona)
       downloadBlob(
-        `${persona.username.replace('@', '') || 'persona'}-asset-kit.zip`,
+        `${persona.username.replace('@', '') || 'persona'}-brand-kit.zip`,
         zipBlob,
       )
       return zipBlob
@@ -321,6 +523,9 @@ export const usePersonaStore = defineStore(
 
     function resetForm() {
       updateParams(initialParams)
+      selectedAssetTypes.value = ['identity', 'avatar', 'signature', 'bio', 'tags']
+      assetConfigs.value = createDefaultAssetConfigs()
+      generationContext.value = createDefaultGenerationContext()
     }
 
     function clearError() {
@@ -359,6 +564,8 @@ export const usePersonaStore = defineStore(
       section: PersonaSection | 'brand',
       message: string,
     ) {
+      activeGenerationController?.abort()
+      activeGenerationController = new AbortController()
       stopProgressTimer()
       isLoading.value = true
       loadingMessage.value = message
@@ -369,6 +576,7 @@ export const usePersonaStore = defineStore(
       progressTimer = window.setInterval(() => {
         progress.value = Math.min(progress.value + Math.random() * 14, 86)
       }, 260)
+      return activeGenerationController.signal
     }
 
     function finishGeneration() {
@@ -396,6 +604,12 @@ export const usePersonaStore = defineStore(
       loadingMessage.value = ''
       generatingSection.value = null
       progress.value = 0
+      activeGenerationController = undefined
+    }
+
+    function cancelGeneration() {
+      activeGenerationController?.abort()
+      stopGeneration()
     }
 
     function stopProgressTimer() {
@@ -419,11 +633,38 @@ export const usePersonaStore = defineStore(
       currentPersonaId.value = nextPersona.id
     }
 
+    function restoreWorkspaceFromPersona(persona: Persona) {
+      const nextAssetTypes = getPersonaAssetTypes(persona)
+      const nextAssetConfigs = getPersonaAssetConfigs(persona)
+
+      selectedAssetTypes.value = nextAssetTypes
+      assetConfigs.value = nextAssetConfigs
+      generationContext.value = getPersonaGenerationContext(persona)
+      params.value = {
+        ...initialParams,
+        ...persona.params,
+        prompt: persona.prompt,
+        style: persona.style,
+        imageCount: nextAssetConfigs.avatar.imageCount,
+        imageSize: nextAssetConfigs.avatar.imageSize,
+        assetTypes: nextAssetTypes,
+        assetConfigs: cloneAssetConfigs(nextAssetConfigs),
+        generationContext: cloneGenerationContext(generationContext.value),
+      }
+      form.value = {
+        prompt: persona.prompt,
+        style: persona.style,
+      }
+    }
+
     return {
       form,
       params,
       history,
       promptHistory,
+      selectedAssetTypes,
+      assetConfigs,
+      generationContext,
       currentPersona,
       activePersona,
       activeBrand,
@@ -445,13 +686,21 @@ export const usePersonaStore = defineStore(
       shareQrCodeDataUrl,
       generatePersona,
       createPersona,
+      generateSelectedAssets,
       retryPart,
       regenerateSection,
+      regenerateAsset,
       updateParams,
       setPrompt,
+      toggleAssetType,
+      updateAssetConfig,
+      updateAssetField,
+      updateGenerationContext,
+      applyScenarioPreset,
       addPromptHistory,
       clearPromptHistory,
       selectAvatar,
+      selectNickname,
       updateAvatar,
       addAvatarVariant,
       selectPersona,
@@ -464,15 +713,72 @@ export const usePersonaStore = defineStore(
       closeHistory,
       resetForm,
       clearError,
+      cancelGeneration,
     }
   },
   {
     persist: {
       key: 'ai-persona-app-state',
-      pick: ['form', 'params', 'history', 'currentPersonaId', 'promptHistory'],
+      pick: ['form', 'params', 'history', 'currentPersonaId', 'promptHistory', 'selectedAssetTypes', 'assetConfigs', 'generationContext'],
     },
   },
 )
+
+function mergeSelectedAssets(existingPersona: Persona | undefined, generatedPersona: Persona, selectedTypes: AssetType[]): Persona {
+  const selected = new Set(selectedTypes)
+  const base = existingPersona ?? generatedPersona
+  const avatarSource = selected.has('avatar') ? generatedPersona : base
+  const identitySource = selected.has('identity') ? generatedPersona : base
+  const signatureSource = selected.has('signature') ? generatedPersona : base
+  const bioSource = selected.has('bio') ? generatedPersona : base
+  const tagSource = selected.has('tags') ? generatedPersona : base
+
+  return {
+    ...base,
+    prompt: generatedPersona.prompt,
+    style: generatedPersona.style,
+    params: generatedPersona.params,
+    avatars: avatarSource.avatars,
+    avatarUrl: avatarSource.avatarUrl,
+    avatarUrls: avatarSource.avatarUrls,
+    selectedAvatarId: avatarSource.selectedAvatarId,
+    nickname: identitySource.nickname,
+    username: identitySource.username,
+    nicknames: identitySource.nicknames,
+    signature: signatureSource.signature,
+    bio: bioSource.bio,
+    bios: bioSource.bios,
+    tags: tagSource.tags,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function createHistoryEntry(persona: Persona): Persona {
+  const now = new Date().toISOString()
+
+  return {
+    ...persona,
+    id: createId('brand'),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function assetToPersonaSection(type: AssetType): PersonaSection {
+  return type
+}
+
+function assetRetryMessage(type: AssetType) {
+  const messages: Record<AssetType, string> = {
+    identity: '正在重新生成名称',
+    avatar: '正在重新生成头像',
+    signature: '正在重新生成签名',
+    bio: '正在重新生成简介',
+    tags: '正在重新生成关键词',
+  }
+
+  return messages[type]
+}
 
 function normalizePersona(
   persona: Persona,
@@ -481,6 +787,9 @@ function normalizePersona(
   const selectedAvatar =
     persona.avatars.find((avatar) => avatar.id === persona.selectedAvatarId) ??
     persona.avatars[0]
+  const normalizedAssetTypes = getPersonaAssetTypes(persona)
+  const normalizedAssetConfigs = getPersonaAssetConfigs(persona)
+  const normalizedContext = getPersonaGenerationContext(persona)
 
   return {
     ...persona,
@@ -492,19 +801,151 @@ function normalizePersona(
       ? persona.nicknames
       : [persona.nickname, persona.username].filter(Boolean),
     bio: persona.bio || persona.bios[0]?.content || '',
+    assetTypes: normalizedAssetTypes,
+    assetConfigs: normalizedAssetConfigs,
+    generationContext: normalizedContext,
     params: {
       ...params,
       prompt: persona.prompt,
       style: persona.style,
+      assetTypes: normalizedAssetTypes,
+      assetConfigs: normalizedAssetConfigs,
+      generationContext: normalizedContext,
     },
+  }
+}
+
+function withGenerationSnapshot(
+  persona: Persona,
+  assetTypes: AssetType[],
+  configs: AssetConfigState,
+  context: GenerationContext,
+): Persona {
+  const assetConfigSnapshot = cloneAssetConfigs(configs)
+  const contextSnapshot = cloneGenerationContext(context)
+
+  return {
+    ...persona,
+    assetTypes: [...assetTypes],
+    assetConfigs: assetConfigSnapshot,
+    generationContext: contextSnapshot,
+    params: {
+      ...persona.params,
+      imageCount: assetConfigSnapshot.avatar.imageCount,
+      imageSize: assetConfigSnapshot.avatar.imageSize,
+      assetTypes: [...assetTypes],
+      assetConfigs: assetConfigSnapshot,
+      generationContext: contextSnapshot,
+      outputLanguage: contextSnapshot.language === 'en-US' ? 'en-US' : 'zh-CN',
+    },
+  }
+}
+
+function getPersonaAssetTypes(persona: Persona): AssetType[] {
+  if (persona.assetTypes?.length) {
+    const savedTypes = [...persona.assetTypes]
+
+    // Older snapshots stored names together with signatures; migrate them into the new identity asset.
+    if ((persona.nickname || persona.username) && !savedTypes.includes('identity')) {
+      savedTypes.unshift('identity')
+    }
+
+    return savedTypes
+  }
+
+  const inferredTypes: AssetType[] = []
+
+  if (persona.avatars?.length || persona.avatarUrl) {
+    inferredTypes.push('avatar')
+  }
+
+  if (persona.nickname || persona.username) {
+    inferredTypes.push('identity')
+  }
+
+  if (persona.signature) {
+    inferredTypes.push('signature')
+  }
+
+  if (persona.bio || persona.bios?.length) {
+    inferredTypes.push('bio')
+  }
+
+  if (persona.tags?.length) {
+    inferredTypes.push('tags')
+  }
+
+  return inferredTypes.length ? inferredTypes : ['identity', 'avatar', 'signature', 'bio', 'tags']
+}
+
+function getPersonaAssetConfigs(persona: Persona): AssetConfigState {
+  const savedConfigs = persona.assetConfigs
+  const normalized = normalizeAssetConfigState(savedConfigs)
+  normalized.avatar.imageCount = savedConfigs?.avatar?.imageCount ?? persona.params?.imageCount ?? normalized.avatar.imageCount
+  normalized.avatar.imageSize = savedConfigs?.avatar?.imageSize ?? persona.params?.imageSize ?? normalized.avatar.imageSize
+  return normalized
+}
+
+function normalizeAssetConfigState(saved?: Partial<AssetConfigState>): AssetConfigState {
+  const defaults = createDefaultAssetConfigs()
+
+  return {
+    identity: { ...defaults.identity, ...saved?.identity },
+    avatar: { ...defaults.avatar, ...saved?.avatar },
+    signature: { ...defaults.signature, ...saved?.signature },
+    bio: {
+      ...defaults.bio,
+      ...saved?.bio,
+      emphasis: [...(saved?.bio?.emphasis ?? defaults.bio.emphasis)],
+    },
+    tags: {
+      ...defaults.tags,
+      ...saved?.tags,
+      categories: [...(saved?.tags?.categories ?? defaults.tags.categories)],
+    },
+  }
+}
+
+function cloneAssetConfigs(configs: AssetConfigState): AssetConfigState {
+  return {
+    identity: { ...configs.identity },
+    avatar: { ...configs.avatar },
+    signature: { ...configs.signature },
+    bio: { ...configs.bio, emphasis: [...configs.bio.emphasis] },
+    tags: { ...configs.tags, categories: [...configs.tags.categories] },
+  }
+}
+
+function getPersonaGenerationContext(persona: Persona): GenerationContext {
+  return normalizeGenerationContext({
+    ...persona.generationContext,
+    ...persona.params?.generationContext,
+  })
+}
+
+function normalizeGenerationContext(saved?: Partial<GenerationContext>): GenerationContext {
+  const defaults = createDefaultGenerationContext()
+  return {
+    ...defaults,
+    ...saved,
+    brandVoice: [...(saved?.brandVoice ?? defaults.brandVoice)],
+  }
+}
+
+function cloneGenerationContext(context: GenerationContext): GenerationContext {
+  return {
+    ...context,
+    brandVoice: [...context.brandVoice],
   }
 }
 
 function retryMessage(section: PersonaSection) {
   const messages: Record<PersonaSection, string> = {
+    identity: '正在重新生成名称',
     avatar: '正在重新生成头像',
     signature: '正在重新生成签名',
     bio: '正在重新生成简介',
+    tags: '正在重新生成关键词',
   }
 
   return messages[section]

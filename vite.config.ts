@@ -11,9 +11,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Astra Persona',
-        short_name: 'Astra',
-        description: 'Create refined AI identity assets for personal brands and digital creators.',
+        name: '星格 AI 个人品牌生成器',
+        short_name: '星格',
+        description: '为个人品牌与内容创作者生成统一、专业、可复用的身份形象与品牌内容。',
         theme_color: '#0f766e',
         background_color: '#07111f',
         display: 'standalone',
@@ -55,5 +55,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
+    },
   },
 })

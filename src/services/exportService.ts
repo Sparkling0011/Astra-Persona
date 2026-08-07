@@ -78,15 +78,15 @@ export async function createShareLink(persona: Persona): Promise<SharePayload> {
 
 function createKitReadme(persona: Persona) {
   return [
-    `Astra Persona Asset Kit: ${persona.nickname}`,
+    `星格 AI 个人品牌套装：${persona.nickname}`,
     '',
-    `Username: ${persona.username}`,
-    `Signature: ${persona.signature}`,
+    `用户名：${persona.username}`,
+    `个性签名：${persona.signature}`,
     '',
-    'Tags:',
+    '个性标签：',
     persona.tags.map((tag) => `- ${tag}`).join('\n'),
     '',
-    'Profile Bio:',
+    '个人简介：',
     persona.bio || persona.bios[0]?.content || '',
   ].join('\n')
 }

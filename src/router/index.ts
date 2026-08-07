@@ -8,7 +8,7 @@ export const router = createRouter({
       name: 'home',
       component: () => import('@/views/HomeView.vue'),
       meta: {
-        title: 'Astra Persona | AI Identity Studio',
+        title: '星格身份 | Astra Persona',
       },
     },
     {
@@ -16,12 +16,12 @@ export const router = createRouter({
       name: 'history',
       component: () => import('@/views/HistoryView.vue'),
       meta: {
-        title: '资产库 | Astra Persona',
+        title: '历史记录 | 星格身份',
       },
     },
   ],
 })
 
 router.afterEach((to) => {
-  document.title = String(to.meta.title ?? 'Astra Persona')
+  document.title = String(to.meta.title ?? '星格身份 | Astra Persona')
 })
