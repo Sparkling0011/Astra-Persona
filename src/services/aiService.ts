@@ -39,16 +39,16 @@ export interface TextGenerationOptions {
   temperature?: number
   maxTokens?: number
   responseFormat?: 'text' | 'json_object'
-  signal?: AbortSignal
-  onDelta?: (delta: string, fullText: string) => void
+  signal?: AbortSignal | undefined
+  onDelta?: ((delta: string, fullText: string) => void) | undefined
 }
 
 export interface ImageGenerationOptions {
   prompt: string
   count?: number
   size?: string
-  signal?: AbortSignal
-  onProgress?: (progress: ImageProgress) => void
+  signal?: AbortSignal | undefined
+  onProgress?: ((progress: ImageProgress) => void) | undefined
 }
 
 export interface ImageProgress {
@@ -68,11 +68,34 @@ export interface PersonaTextIdentity {
   imagePrompt: string
 }
 
+export type PersonaAssetUpdate =
+  | {
+    type: 'identity'
+    value: Pick<PersonaBrand, 'nickname' | 'nicknames' | 'username'>
+  }
+  | {
+    type: 'avatar'
+    value: Pick<PersonaBrand, 'avatars' | 'avatarUrl' | 'avatarUrls' | 'selectedAvatarId'>
+  }
+  | {
+    type: 'signature'
+    value: Pick<PersonaBrand, 'signature'>
+  }
+  | {
+    type: 'bio'
+    value: Pick<PersonaBrand, 'bio' | 'bios'>
+  }
+  | {
+    type: 'tags'
+    value: Pick<PersonaBrand, 'tags'>
+  }
+
 export interface CompletePersonaOptions {
   form: PersonaForm | PersonaGenerationParams
-  signal?: AbortSignal
+  signal?: AbortSignal | undefined
   onTextDelta?: TextGenerationOptions['onDelta']
   onImageProgress?: ImageGenerationOptions['onProgress']
+  onAssetComplete?: ((update: PersonaAssetUpdate) => void) | undefined
 }
 
 export interface AIQueueJob<T> {
@@ -446,61 +469,278 @@ export class AIService {
     const id = createId('brand')
     const assetTypes = getRequestedAssetTypes(options.form)
     const assetConfigs = getAssetConfigs(options.form)
-    const identity = await this.generatePersonaTextIdentity(options.form, options.signal, options.onTextDelta)
-    const imagePrompt = buildImagePrompt(
-      identity.imagePrompt || buildLocalOptimizedPrompt(options.form.prompt, options.form.style),
-      assetConfigs.avatar,
-    )
-    let imageUrls: string[] = []
-
-    if (assetTypes.includes('avatar') && this.hasImageCredentials()) {
-      const imageOptions: ImageGenerationOptions = {
-          prompt: imagePrompt,
-          count: assetConfigs.avatar.imageCount,
-          size: assetConfigs.avatar.imageSize,
-        }
-
-      if (options.signal) {
-        imageOptions.signal = options.signal
-      }
-
-      if (options.onImageProgress) {
-        imageOptions.onProgress = options.onImageProgress
-      }
-
-      imageUrls = await this.generateImages(imageOptions)
-    } else if (assetTypes.includes('avatar')) {
-      imageUrls = createLocalImageUrls(id, options.form.style, imagePrompt, assetConfigs.avatar.imageCount)
-    }
-
-    const avatars = imageUrls.map<AvatarVariant>((url, index) => ({
-      id: createId('avatar'),
-      url,
-      label: ['主视觉', '社交款', '专业款'][index] ?? `变体 ${index + 1}`,
-    }))
-
-    return {
+    const context = getGenerationContext(options.form)
+    const persona: PersonaBrand = {
       id,
       prompt: options.form.prompt,
       style: options.form.style,
-      avatars,
-      avatarUrl: avatars[0]?.url ?? '',
-      avatarUrls: avatars.map((avatar) => avatar.url),
-      selectedAvatarId: avatars[0]?.id ?? '',
-      nicknames: identity.nicknames,
-      nickname: identity.nickname,
-      username: identity.username,
-      signature: identity.signature,
-      bio: identity.bio,
-      bios: identity.bios,
-      tags: identity.tags,
+      avatars: [],
+      avatarUrl: '',
+      avatarUrls: [],
+      selectedAvatarId: '',
+      nicknames: [],
+      nickname: '',
+      username: '',
+      signature: '',
+      bio: '',
+      bios: [],
+      tags: [],
       assetTypes,
       assetConfigs,
-      generationContext: getGenerationContext(options.form),
+      generationContext: context,
       params: createDefaultParams(options.form),
       createdAt: now,
       updatedAt: now,
     }
+
+    const controller = new AbortController()
+    const signal = mergeSignals(options.signal, controller.signal)
+    const tasks = this.createAssetTasks(options.form, id, assetTypes, assetConfigs, context, signal, options)
+
+    try {
+      await runConcurrent(tasks, this.config.maxConcurrency, signal, (update) => {
+        applyAssetUpdate(persona, update)
+        persona.updatedAt = new Date().toISOString()
+        options.onAssetComplete?.(update)
+      })
+    } catch (error) {
+      controller.abort()
+      throw error
+    }
+
+    return persona
+  }
+
+  private createAssetTasks(
+    form: PersonaForm | PersonaGenerationParams,
+    id: string,
+    assetTypes: AssetType[],
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal: AbortSignal | undefined,
+    options: CompletePersonaOptions,
+  ): Array<() => Promise<PersonaAssetUpdate>> {
+    const tasks: Array<() => Promise<PersonaAssetUpdate>> = []
+
+    if (assetTypes.includes('identity')) {
+      tasks.push(() => this.generateIdentityAsset(form, configs, context, signal))
+    }
+
+    if (assetTypes.includes('signature')) {
+      tasks.push(() => this.generateSignatureAsset(form, configs, context, signal))
+    }
+
+    if (assetTypes.includes('bio')) {
+      tasks.push(() => this.generateBioAsset(form, configs, context, signal))
+    }
+
+    if (assetTypes.includes('tags')) {
+      tasks.push(() => this.generateTagsAsset(form, configs, context, signal))
+    }
+
+    if (assetTypes.includes('avatar')) {
+      tasks.push(() => this.generateAvatarAsset(form, id, configs, context, signal, options.onImageProgress))
+    }
+
+    return tasks
+  }
+
+  private async generateIdentityAsset(
+    form: PersonaForm | PersonaGenerationParams,
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal?: AbortSignal,
+  ): Promise<PersonaAssetUpdate> {
+    const fallback = createLocalTextIdentity(form.prompt, form.style, configs, context)
+
+    if (!this.hasTextCredentials()) {
+      return { type: 'identity', value: pickIdentity(fallback) }
+    }
+
+    const parsed = await this.generateStructuredAsset<Partial<PersonaTextIdentity>>({
+      system: '你是中文命名编辑。只输出 JSON，不要解释。命名必须可读、可记、与用户真实定位有关；拒绝空泛的科技感词堆砌，也不要虚构成绩。',
+      instruction: `${buildGroundedBrief(form, context)}\n\n任务：给出 ${configs.identity.candidateCount} 个互不重复的昵称，以及一个可用于社交平台的 username。\nJSON 字段：nickname, nicknames, username。nickname 必须等于 nicknames 的第一项。命名倾向：${identityNamingLabelMap[configs.identity.namingStyle]}；辨识程度：${identityMemorabilityLabelMap[configs.identity.memorability]}；账号名${configs.identity.allowNumbers ? '允许' : '不允许'}数字。${configs.identity.customInstruction ? `额外要求：${configs.identity.customInstruction}` : ''}`,
+      maxTokens: 260,
+      form,
+      signal,
+    })
+    const nicknames = Array.isArray(parsed.nicknames)
+      ? parsed.nicknames.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, configs.identity.candidateCount)
+      : fallback.nicknames
+    const nickname = typeof parsed.nickname === 'string' && parsed.nickname.trim() ? parsed.nickname.trim() : nicknames[0] ?? fallback.nickname
+
+    return {
+      type: 'identity',
+      value: {
+        nickname,
+        nicknames: [nickname, ...nicknames.filter((item) => item !== nickname)].slice(0, configs.identity.candidateCount),
+        username: typeof parsed.username === 'string' && parsed.username.trim() ? parsed.username.trim() : fallback.username,
+      },
+    }
+  }
+
+  private async generateSignatureAsset(
+    form: PersonaForm | PersonaGenerationParams,
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal?: AbortSignal,
+  ): Promise<PersonaAssetUpdate> {
+    const fallback = createLocalTextIdentity(form.prompt, form.style, configs, context)
+    const value = !this.hasTextCredentials()
+      ? fallback.signature
+      : await this.generateCopyWithQualityGate({
+        system: '你是有判断力的个人品牌文案编辑。只输出 JSON，不要解释。签名必须像一个人说的话，有具体立场，不要写岗位说明或营销口号。不得编造经历。',
+        instruction: `${buildGroundedBrief(form, context)}\n\n任务：写 1 条社交签名。${signatureLengthLabelMap[configs.signature.length]}；语气为${signatureToneLabelMap[configs.signature.tone]}；结构为${signatureStructureLabelMap[configs.signature.structure]}；${configs.signature.allowEmoji ? '最多可使用一个自然的 Emoji。' : '不要使用 Emoji。'}${configs.signature.customInstruction ? `额外要求：${configs.signature.customInstruction}` : ''}\nJSON 字段：signature。`,
+        key: 'signature',
+        fallback: fallback.signature,
+        maxTokens: 150,
+        form,
+        context,
+        signal,
+      })
+
+    return { type: 'signature', value: { signature: value } }
+  }
+
+  private async generateBioAsset(
+    form: PersonaForm | PersonaGenerationParams,
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal?: AbortSignal,
+  ): Promise<PersonaAssetUpdate> {
+    const fallback = createLocalTextIdentity(form.prompt, form.style, configs, context)
+    const value = !this.hasTextCredentials()
+      ? fallback.bio
+      : await this.generateCopyWithQualityGate({
+        system: '你是中文个人简介编辑。只输出 JSON，不要解释。优先使用用户给出的真实经历、项目和观点；未提供事实时保持克制，绝不杜撰成绩。写出具体的人，不写品牌咨询腔。',
+        instruction: `${buildGroundedBrief(form, context)}\n\n任务：写 1 段统一个人简介。${bioLengthLabelMap[configs.bio.length]}；使用${configs.bio.voice === 'first-person' ? '第一人称' : '第三人称'}；重点覆盖${configs.bio.emphasis.map((item) => bioEmphasisLabelMap[item]).join('、')}；${configs.bio.includeCta ? '结尾给出自然、具体的行动邀请。' : '不要添加营销式行动引导。'}${configs.bio.customInstruction ? `额外要求：${configs.bio.customInstruction}` : ''}\nJSON 字段：bio。`,
+        key: 'bio',
+        fallback: fallback.bio,
+        maxTokens: configs.bio.length === 'long' ? 420 : 280,
+        form,
+        context,
+        signal,
+      })
+
+    return { type: 'bio', value: { bio: value, bios: [{ platform: '自我介绍', content: value }] } }
+  }
+
+  private async generateTagsAsset(
+    form: PersonaForm | PersonaGenerationParams,
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal?: AbortSignal,
+  ): Promise<PersonaAssetUpdate> {
+    const fallback = createLocalTextIdentity(form.prompt, form.style, configs, context)
+
+    if (!this.hasTextCredentials()) {
+      return { type: 'tags', value: { tags: fallback.tags } }
+    }
+
+    const parsed = await this.generateStructuredAsset<{ tags?: unknown }>({
+      system: '你是内容定位编辑。只输出 JSON，不要解释。标签要兼顾检索词和人的辨识度，禁止使用空泛营销词，不要虚构身份或成就。',
+      instruction: `${buildGroundedBrief(form, context)}\n\n任务：严格生成 ${configs.tags.count} 个标签。范围为${tagDensityLabelMap[configs.tags.density]}；包含${configs.tags.categories.map((item) => tagCategoryLabelMap[item]).join('、')}；${configs.tags.format === 'hashtag' ? '每项以 # 开头。' : '不要添加 #。'}${configs.tags.customInstruction ? `额外要求：${configs.tags.customInstruction}` : ''}\nJSON 字段：tags（字符串数组）。`,
+      maxTokens: 160,
+      form,
+      signal,
+    })
+    const tags = Array.isArray(parsed.tags)
+      ? parsed.tags.filter((item): item is string => typeof item === 'string')
+      : fallback.tags
+
+    return { type: 'tags', value: { tags: formatTags(tags, configs.tags) } }
+  }
+
+  private async generateAvatarAsset(
+    form: PersonaForm | PersonaGenerationParams,
+    id: string,
+    configs: AssetConfigState,
+    context: GenerationContext,
+    signal?: AbortSignal,
+    onProgress?: ImageGenerationOptions['onProgress'],
+  ): Promise<PersonaAssetUpdate> {
+    const imagePrompt = buildImagePrompt(buildAvatarBrief(form, context), configs.avatar)
+    const imageUrls = this.hasImageCredentials()
+      ? await this.generateImages({ prompt: imagePrompt, count: configs.avatar.imageCount, size: configs.avatar.imageSize, signal, onProgress })
+      : createLocalImageUrls(id, form.style, imagePrompt, configs.avatar.imageCount)
+    const isDemoAvatar = !this.hasImageCredentials()
+    const avatars = imageUrls.map<AvatarVariant>((url, index) => ({
+      id: createId('avatar'),
+      url,
+      label: isDemoAvatar
+        ? `示例头像 ${index + 1}`
+        : ['主视觉', '社交款', '专业款'][index] ?? `变体 ${index + 1}`,
+    }))
+
+    return {
+      type: 'avatar',
+      value: {
+        avatars,
+        avatarUrl: avatars[0]?.url ?? '',
+        avatarUrls: avatars.map((avatar) => avatar.url),
+        selectedAvatarId: avatars[0]?.id ?? '',
+      },
+    }
+  }
+
+  private async generateStructuredAsset<T>(options: {
+    system: string
+    instruction: string
+    maxTokens: number
+    form: PersonaForm | PersonaGenerationParams
+    signal?: AbortSignal | undefined
+  }): Promise<T> {
+    const content = await this.generateText({
+      temperature: mapCreativityToTemperature(getCreativity(options.form)),
+      maxTokens: options.maxTokens,
+      responseFormat: 'json_object',
+      signal: options.signal,
+      messages: [
+        { role: 'system', content: options.system },
+        { role: 'user', content: options.instruction },
+      ],
+    })
+
+    try {
+      return JSON.parse(extractJson(content)) as T
+    } catch (error) {
+      throw new AIServiceError('文本模型返回内容不是合法 JSON', 'parse', error)
+    }
+  }
+
+  private async generateCopyWithQualityGate(options: {
+    system: string
+    instruction: string
+    key: 'signature' | 'bio'
+    fallback: string
+    maxTokens: number
+    form: PersonaForm | PersonaGenerationParams
+    context: GenerationContext
+    signal?: AbortSignal | undefined
+  }): Promise<string> {
+    const parsed = await this.generateStructuredAsset<Record<string, unknown>>(options)
+    const initialValue = parsed[options.key]
+    const initial = typeof initialValue === 'string' && initialValue.trim()
+      ? initialValue.trim()
+      : options.fallback
+    const issues = getCopyQualityIssues(initial, options.context)
+
+    if (!issues.length) {
+      return initial
+    }
+
+    const refined = await this.generateStructuredAsset<Record<string, unknown>>({
+      system: '你是严谨的中文文案审校编辑。只输出 JSON，不要解释。保留真实信息，删除套话和空泛修辞；绝不补充未提供的经历、客户、数字或成绩。',
+      instruction: `${buildGroundedBrief(options.form, options.context)}\n\n原文：${initial}\n\n问题：${issues.join('；')}\n\n请重写这段${options.key === 'signature' ? '社交签名' : '个人简介'}，保留原有意图，语言自然具体。JSON 字段：${options.key}。`,
+      maxTokens: options.maxTokens,
+      form: options.form,
+      signal: options.signal,
+    })
+
+    const refinedValue = refined[options.key]
+    return typeof refinedValue === 'string' && refinedValue.trim()
+      ? refinedValue.trim()
+      : initial
   }
 
   private async pollImageTask(taskId: string, options: ImageGenerationOptions): Promise<string[]> {
@@ -596,14 +836,54 @@ export function createAIConfigFromEnv(): AIServiceConfig {
       generationPath: '/api/ai/image',
       pollPath: '/api/ai/image/tasks/:taskId',
     },
-    maxConcurrency: Number(import.meta.env.VITE_AI_MAX_CONCURRENCY || '2'),
-    retryCount: Number(import.meta.env.VITE_AI_RETRY_COUNT || '2'),
+    maxConcurrency: Number(import.meta.env.VITE_AI_MAX_CONCURRENCY || '3'),
+    retryCount: Number(import.meta.env.VITE_AI_RETRY_COUNT || '1'),
     retryBaseDelayMs: Number(import.meta.env.VITE_AI_RETRY_BASE_DELAY_MS || '700'),
-    requestTimeoutMs: Number(import.meta.env.VITE_AI_REQUEST_TIMEOUT_MS || '120000'),
+    requestTimeoutMs: Number(import.meta.env.VITE_AI_REQUEST_TIMEOUT_MS || '60000'),
   }
 }
 
 export const aiService = new AIService()
+
+async function runConcurrent(
+  tasks: Array<() => Promise<PersonaAssetUpdate>>,
+  maxConcurrency: number,
+  signal: AbortSignal | undefined,
+  onComplete: (update: PersonaAssetUpdate) => void,
+) {
+  let cursor = 0
+  const workerCount = Math.max(1, Math.min(maxConcurrency, tasks.length))
+
+  async function worker() {
+    for (;;) {
+      throwIfAborted(signal)
+      const task = tasks[cursor]
+      cursor += 1
+
+      if (!task) {
+        return
+      }
+
+      const update = await task()
+      throwIfAborted(signal)
+      onComplete(update)
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+}
+
+function applyAssetUpdate(persona: PersonaBrand, update: PersonaAssetUpdate) {
+  Object.assign(persona, update.value)
+}
+
+function pickIdentity(identity: PersonaTextIdentity): Pick<PersonaBrand, 'nickname' | 'nicknames' | 'username'> {
+  return {
+    nickname: identity.nickname,
+    nicknames: identity.nicknames,
+    username: identity.username,
+  }
+}
 
 async function readOpenAICompatibleStream(response: Response, onDelta: NonNullable<TextGenerationOptions['onDelta']>) {
   const reader = response.body?.getReader()
@@ -718,9 +998,9 @@ function createLocalTextIdentity(
     const chineseName = `${base}${chineseSuffixes[index] ?? `品牌 ${index + 1}`}`
     return configs.identity.namingStyle === 'bilingual' ? `${chineseName} · ${englishName}` : chineseName
   })
-  const signatureBase = createLocalSignature(keywords, styleName, configs.signature)
+  const signatureBase = createLocalSignature(keywords, configs.signature, context)
   const signature = fitTextLength(signatureBase, signatureLengthRange[configs.signature.length])
-  const bioBase = createLocalBio(base, keyLine, styleName, configs.bio, context)
+  const bioBase = createLocalBio(base, keyLine, configs.bio, context)
   const bio = fitTextLength(bioBase, bioLengthRange[configs.bio.length])
   const categoryTags = configs.tags.categories.map((category) => tagCategoryFallbackMap[category])
   const localTags = formatTags([...requiredKeywords, ...keywords, styleName, ...categoryTags, ...context.brandVoice.map((voice) => voiceLabelMap[voice])], configs.tags)
@@ -746,15 +1026,16 @@ function createLocalTextIdentity(
 
 function createLocalSignature(
   keywords: string[],
-  styleName: string,
   config: AssetConfigState['signature'],
+  context: GenerationContext,
 ) {
   const subject = keywords[1] ?? keywords[0] ?? '灵感'
+  const perspective = context.perspective.trim().replace(/[。！!？?]+$/, '')
   const structureCopy = {
-    value: `把${subject}变成清晰、可复用的价值`,
-    expertise: `专注${subject}，用专业方法解决真实问题`,
-    attitude: `不追逐噪声，只持续表达${subject}`,
-    hybrid: `以${styleName}方式深耕${subject}，让专业被看见`,
+    value: `让${subject}真正用起来，而不是停在概念里`,
+    expertise: `把${subject}里的难题讲清楚、做扎实`,
+    attitude: `${subject}不靠口号，靠一次次具体实践`,
+    hybrid: `把${subject}做明白，也做扎实`,
   } satisfies Record<AssetConfigState['signature']['structure'], string>
   const tonePrefix = {
     professional: '',
@@ -762,23 +1043,26 @@ function createLocalSignature(
     bold: '拒绝平庸，',
   } satisfies Record<AssetConfigState['signature']['tone'], string>
 
-  return `${tonePrefix[config.tone]}${structureCopy[config.structure]}${config.allowEmoji ? ' ✦' : ''}`
+  const copy = perspective || structureCopy[config.structure]
+  return `${tonePrefix[config.tone]}${copy}${config.allowEmoji ? ' ✦' : ''}`
 }
 
 function createLocalBio(
   base: string,
   keyLine: string,
-  styleName: string,
   config: AssetConfigState['bio'],
   context: GenerationContext,
 ) {
   const subject = config.voice === 'first-person' ? '我' : base
+  const experience = context.experience.trim() || keyLine
+  const proof = context.proofPoints.trim()
+  const perspective = context.perspective.trim()
   const sections = config.emphasis.map((emphasis) => {
     const copy = {
-      identity: `${subject}是一名以${styleName}方式持续创作的个人品牌实践者`,
-      expertise: `长期关注 ${keyLine}，擅长把复杂经验整理成清晰方法`,
-      value: `希望为${context.audience}提供有辨识度且能够落地的内容价值`,
-      proof: '持续通过真实项目沉淀经验，并用作品验证判断',
+      identity: `${subject}在做${experience}`,
+      expertise: `工作重点是${keyLine}，更在意方法能不能落到真实场景`,
+      value: perspective || `希望给${context.audience}带来更具体、可执行的参考`,
+      proof: proof ? `可验证的经历与成果包括：${proof}` : '不把没有依据的经历和成绩写进介绍里',
     } satisfies Record<AssetConfigState['bio']['emphasis'][number], string>
     return copy[emphasis]
   })
@@ -893,6 +1177,74 @@ function buildPersonaInstruction(
     ...requirements,
     `品牌简述：\n${optimizedPrompt}`,
   ].filter(Boolean).join('\n')
+}
+
+function buildGroundedBrief(
+  form: PersonaForm | PersonaGenerationParams,
+  context: GenerationContext,
+) {
+  const facts = [
+    `核心定位：${form.prompt.trim() || '未提供'}`,
+    `目标受众：${context.audience || '未提供'}`,
+    context.experience ? `真实经历或项目：${context.experience}` : '真实经历或项目：未提供，不得自行补写。',
+    context.proofPoints ? `可验证成果：${context.proofPoints}` : '可验证成果：未提供，不得使用数字、客户或成绩来充实文案。',
+    context.perspective ? `个人观点：${context.perspective}` : '',
+    context.writingSample ? `本人表达样本（参考节奏和用词，不得照抄）：${context.writingSample}` : '',
+    context.requiredKeywords ? `必须自然出现：${context.requiredKeywords}` : '',
+    context.excludedKeywords ? `禁止出现：${context.excludedKeywords}` : '',
+    context.avoidPhrases ? `禁用套话：${context.avoidPhrases}` : '',
+    `品牌语气：${context.brandVoice.map((voice) => voiceLabelMap[voice]).join('、')}`,
+    `输出语言：${languageLabelMap[context.language]}`,
+  ].filter(Boolean)
+
+  return [
+    '以下是唯一可据以陈述的 Persona Brief：',
+    ...facts,
+    '',
+    '写作原则：具体名词和动作优先于抽象评价；句式有变化；没有证据时宁可不说；不要使用“专注于、致力于、持续探索、赋能、让价值被看见、把复杂变简单”等 AI 套话。',
+  ].join('\n')
+}
+
+function buildAvatarBrief(
+  form: PersonaForm | PersonaGenerationParams,
+  context: GenerationContext,
+) {
+  return [
+    `人物定位：${form.prompt.trim() || '个人品牌创作者'}`,
+    context.experience ? `职业线索：${context.experience}` : '',
+    context.perspective ? `人物气质：${context.perspective}` : '',
+    `整体风格：${styleLabelMap[form.style]}`,
+    '只生成可识别的人物视觉形象，不要文字、logo、水印或虚构奖项元素。',
+  ].filter(Boolean).join('\n')
+}
+
+function getCopyQualityIssues(copy: string, context: GenerationContext) {
+  const phrases = [
+    ...splitPhrases(context.avoidPhrases),
+    '专注于',
+    '致力于',
+    '持续探索',
+    '赋能',
+    '让价值被看见',
+    '把复杂变简单',
+    '有温度的表达',
+  ]
+  const hits = [...new Set(phrases.filter((phrase) => phrase && copy.includes(phrase)))]
+  const issues: string[] = []
+
+  if (hits.length) {
+    issues.push(`包含禁用或模板化表达：${hits.join('、')}`)
+  }
+
+  if (/(我们|我们团队|客户|服务过|累计|\d+\s*(家|万|年|次|%)|获奖)/.test(copy) && !context.experience && !context.proofPoints) {
+    issues.push('在未提供事实依据时出现了可能的虚构背书')
+  }
+
+  return issues
+}
+
+function splitPhrases(input: string) {
+  return input.split(/[,，、\n/]+/).map((item) => item.trim()).filter(Boolean)
 }
 
 function formatTags(tags: string[], config: AssetConfigState['tags']) {

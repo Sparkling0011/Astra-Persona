@@ -334,6 +334,11 @@ export function createDefaultGenerationContext(): GenerationContext {
     language: 'zh-CN',
     requiredKeywords: '',
     excludedKeywords: '',
+    experience: '',
+    proofPoints: '',
+    perspective: '',
+    writingSample: '',
+    avoidPhrases: '专注于、致力于、持续探索、赋能、让价值被看见、把复杂变简单',
   }
 }
 

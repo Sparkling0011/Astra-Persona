@@ -6,6 +6,7 @@ import {
   regeneratePersonaSection,
 } from '@/api/persona'
 import { createDefaultAssetConfigs, createDefaultGenerationContext, scenarioPresets } from '@/constants/assets'
+import type { PersonaAssetUpdate } from '@/services/aiService'
 import {
   createShareLink,
   downloadBlob,
@@ -24,8 +25,8 @@ import type {
 } from '@/types/persona'
 
 const initialForm: PersonaForm = {
-  prompt: 'AI 设计师 温柔 科技感 内容创作者',
-  style: 'cyberpunk',
+  prompt: '独立 AI 产品顾问，为小团队设计更省心的工作流，也持续记录工具实践与审美观察。',
+  style: 'professional',
 }
 
 const initialParams: PersonaGenerationParams = {
@@ -75,6 +76,8 @@ export const usePersonaStore = defineStore(
     const error = ref('')
     const lastFailedPart = ref<PersonaSection | 'brand' | null>(null)
     const generationOutcome = ref<'idle' | 'loading' | 'success' | 'failed'>('idle')
+    const generationPreview = ref<Persona | undefined>()
+    const completedAssetTypes = ref<AssetType[]>([])
     const shareUrl = ref('')
     const shareQrCodeDataUrl = ref('')
     let progressTimer: number | undefined
@@ -87,7 +90,7 @@ export const usePersonaStore = defineStore(
         ) ?? history.value[0],
     )
     const activePersona = currentPersona
-    const activeBrand = currentPersona
+    const activeBrand = computed(() => generationPreview.value ?? currentPersona.value)
     const latestPersona = currentPersona
     const brands = history
     const personas = history
@@ -127,10 +130,11 @@ export const usePersonaStore = defineStore(
 
       const signal = beginGeneration('brand', '正在生成个人品牌内容')
       addPromptHistory(form.value)
+      beginGenerationPreview(params.value, ['identity', 'avatar', 'signature', 'bio', 'tags'])
 
       try {
         const persona = normalizePersona(
-          await requestGeneratePersona(params.value, signal),
+          await requestGeneratePersona(params.value, signal, applyGenerationAssetUpdate),
           params.value,
         )
         const nextPersona = withGenerationSnapshot(persona, ['identity', 'avatar', 'signature', 'bio', 'tags'], assetConfigs.value, generationContext.value)
@@ -166,10 +170,11 @@ export const usePersonaStore = defineStore(
 
       const signal = beginGeneration('brand', `正在生成 ${selectedAssetTypes.value.length} 项内容`)
       addPromptHistory(form.value)
+      beginGenerationPreview(params.value, selectedAssetTypes.value)
 
       try {
         const generatedPersona = normalizePersona(
-          await requestGeneratePersona(params.value, signal),
+          await requestGeneratePersona(params.value, signal, applyGenerationAssetUpdate),
           params.value,
         )
         const nextPersona = mergeSelectedAssets(
@@ -585,6 +590,72 @@ export const usePersonaStore = defineStore(
       return activeGenerationController.signal
     }
 
+    function beginGenerationPreview(nextParams: PersonaGenerationParams, types: AssetType[]) {
+      const now = new Date().toISOString()
+      const existing = currentPersona.value
+      const preview: Persona = existing
+        ? {
+          ...existing,
+          avatars: [...existing.avatars],
+          avatarUrls: [...existing.avatarUrls],
+          nicknames: [...existing.nicknames],
+          bios: [...existing.bios],
+          tags: [...existing.tags],
+        }
+        : {
+          id: createId('preview'),
+          prompt: nextParams.prompt,
+          style: nextParams.style,
+          avatarUrl: '',
+          avatarUrls: [],
+          avatars: [],
+          selectedAvatarId: '',
+          nicknames: [],
+          nickname: '',
+          username: '',
+          signature: '',
+          bio: '',
+          bios: [],
+          tags: [],
+          params: nextParams,
+          createdAt: now,
+          updatedAt: now,
+        }
+
+      preview.prompt = nextParams.prompt
+      preview.style = nextParams.style
+      preview.assetTypes = [...types]
+      preview.assetConfigs = cloneAssetConfigs(nextParams.assetConfigs ?? assetConfigs.value)
+      preview.generationContext = cloneGenerationContext(nextParams.generationContext ?? generationContext.value)
+      preview.params = nextParams
+      preview.updatedAt = now
+
+      for (const type of types) {
+        clearPreviewAsset(preview, type)
+      }
+
+      generationPreview.value = preview
+      completedAssetTypes.value = []
+    }
+
+    function applyGenerationAssetUpdate(update: PersonaAssetUpdate) {
+      const preview = generationPreview.value
+
+      if (!preview || activeGenerationController?.signal.aborted) {
+        return
+      }
+
+      Object.assign(preview, update.value)
+      preview.updatedAt = new Date().toISOString()
+      generationPreview.value = { ...preview }
+
+      if (!completedAssetTypes.value.includes(update.type)) {
+        completedAssetTypes.value = [...completedAssetTypes.value, update.type]
+      }
+      loadingMessage.value = `已完成 ${completedAssetTypes.value.length}/${preview.assetTypes?.length ?? 0} 项内容`
+      progress.value = Math.min(92, 14 + completedAssetTypes.value.length * (70 / Math.max(1, preview.assetTypes?.length ?? 1)))
+    }
+
     function finishGeneration() {
       if (generatingSection.value === 'brand') {
         generationOutcome.value = 'success'
@@ -617,6 +688,8 @@ export const usePersonaStore = defineStore(
       generatingSection.value = null
       progress.value = 0
       activeGenerationController = undefined
+      generationPreview.value = undefined
+      completedAssetTypes.value = []
     }
 
     function cancelGeneration() {
@@ -698,6 +771,8 @@ export const usePersonaStore = defineStore(
       errorMessage,
       lastFailedPart,
       generationOutcome,
+      generationPreview,
+      completedAssetTypes,
       shareUrl,
       shareQrCodeDataUrl,
       generatePersona,
@@ -767,6 +842,36 @@ function mergeSelectedAssets(existingPersona: Persona | undefined, generatedPers
     tags: tagSource.tags,
     updatedAt: new Date().toISOString(),
   }
+}
+
+function clearPreviewAsset(persona: Persona, type: AssetType) {
+  if (type === 'identity') {
+    persona.nickname = ''
+    persona.nicknames = []
+    persona.username = ''
+    return
+  }
+
+  if (type === 'avatar') {
+    persona.avatars = []
+    persona.avatarUrl = ''
+    persona.avatarUrls = []
+    persona.selectedAvatarId = ''
+    return
+  }
+
+  if (type === 'signature') {
+    persona.signature = ''
+    return
+  }
+
+  if (type === 'bio') {
+    persona.bio = ''
+    persona.bios = []
+    return
+  }
+
+  persona.tags = []
 }
 
 function createHistoryEntry(persona: Persona): Persona {

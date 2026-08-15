@@ -82,8 +82,8 @@ function applyPreset(presetId: string) {
       id="brand-prompt"
       v-model="form.prompt"
       class="relative z-10"
-      label="品牌简述"
-      placeholder="例如：独立 AI 产品顾问，关注效率系统与审美表达，希望呈现专业、清晰、有温度的个人形象。"
+      label="品牌简述（写具体的人和事）"
+      placeholder="例如：独立 AI 产品顾问，为小团队设计工作流；做过哪些项目、相信什么、希望谁记住你。"
     />
 
     <BaseSelect id="brand-style" v-model="form.style" class="relative z-10" label="表达风格" :options="personaStyles" />

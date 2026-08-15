@@ -216,10 +216,29 @@ function assetSummary(type: AssetType) {
 
         <button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground" @click="showContextAdvanced = !showContextAdvanced">
           <ChevronDown class="size-3.5 transition" :class="{ 'rotate-180': showContextAdvanced }" />
-          {{ showContextAdvanced ? '收起内容约束' : '内容约束' }}
+          {{ showContextAdvanced ? '收起真实资料与内容约束' : '补充真实资料与内容约束' }}
         </button>
 
         <div v-if="showContextAdvanced" class="grid gap-3 sm:grid-cols-2">
+          <p class="sm:col-span-2 text-xs leading-5 text-muted-foreground">
+            真实经历和本人表达会直接进入生成依据；未提供的事实不会被模型擅自补写。
+          </p>
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground sm:col-span-2">
+            <span>真实经历或代表项目</span>
+            <NInput :value="generationContext.experience" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="例如：曾为 3 家 SaaS 团队设计 AI 工作流，长期写效率工具实践复盘。" @update:value="updateContext('experience', $event)" />
+          </label>
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground">
+            <span>可验证成果</span>
+            <NInput :value="generationContext.proofPoints" placeholder="例如：作品集、服务对象、项目结果；不确定可留空" @update:value="updateContext('proofPoints', $event)" />
+          </label>
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground">
+            <span>想表达的观点</span>
+            <NInput :value="generationContext.perspective" placeholder="例如：好工具应该减少决策疲劳，而不是制造更多功能" @update:value="updateContext('perspective', $event)" />
+          </label>
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground sm:col-span-2">
+            <span>一句本人写过的话</span>
+            <NInput :value="generationContext.writingSample" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="粘贴一两句你觉得像自己的表达，模型会参考节奏和用词，不会原样照抄。" @update:value="updateContext('writingSample', $event)" />
+          </label>
           <label class="grid gap-2 text-xs font-medium text-muted-foreground">
             <span>必须包含</span>
             <NInput :value="generationContext.requiredKeywords" clearable placeholder="多个关键词用逗号分隔" @update:value="updateContext('requiredKeywords', $event)" />
@@ -227,6 +246,10 @@ function assetSummary(type: AssetType) {
           <label class="grid gap-2 text-xs font-medium text-muted-foreground">
             <span>避免使用</span>
             <NInput :value="generationContext.excludedKeywords" clearable placeholder="不希望出现的表达" @update:value="updateContext('excludedKeywords', $event)" />
+          </label>
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground sm:col-span-2">
+            <span>禁用套话</span>
+            <NInput :value="generationContext.avoidPhrases" clearable placeholder="例如：专注于、赋能、让价值被看见（用逗号分隔）" @update:value="updateContext('avoidPhrases', $event)" />
           </label>
         </div>
       </div>

@@ -1,10 +1,14 @@
 import { createDefaultAssetConfigs, createDefaultGenerationContext } from '@/constants/assets'
-import { aiService } from '@/services/aiService'
+import { aiService, type PersonaAssetUpdate } from '@/services/aiService'
 import type { PersonaBrand, PersonaForm, PersonaGenerationParams, PersonaSection } from '@/types/persona'
 
-export function generatePersona(payload: PersonaForm | PersonaGenerationParams, signal?: AbortSignal): Promise<PersonaBrand> {
-  // AIService owns both the remote provider path and the deterministic local fallback.
-  return aiService.generateCompletePersona(signal ? { form: payload, signal } : { form: payload })
+export function generatePersona(
+  payload: PersonaForm | PersonaGenerationParams,
+  signal?: AbortSignal,
+  onAssetComplete?: (update: PersonaAssetUpdate) => void,
+): Promise<PersonaBrand> {
+  // AIService owns the remote provider path, deterministic local fallback, and per-asset completion events.
+  return aiService.generateCompletePersona({ form: payload, signal, onAssetComplete })
 }
 
 export async function regeneratePersonaSection(brand: PersonaBrand, section: PersonaSection, signal?: AbortSignal): Promise<PersonaBrand> {

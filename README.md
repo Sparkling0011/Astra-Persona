@@ -14,7 +14,7 @@
 - 头像多变体预览、主视觉选择、单图下载和重新生成。
 - Pinia 持久化生成历史，支持搜索、确认回填和生成快照。
 - 导出 PNG、JSON 与完整 ZIP 品牌资产包，支持分享链接和二维码。
-- 文本流式输出、请求取消、指数退避重试、客户端任务队列和进度反馈。
+- 按资产并行生成、逐项结果回填、局部重试和进度反馈；真实资料与禁用套话校验减少模板化文案。
 - PWA、路由懒加载、图片懒加载和 Web Worker 图像处理。
 
 ## 技术架构
@@ -109,7 +109,9 @@ VITE_API_BASE_URL=https://your-service.onrender.com
 VITE_USE_REAL_AI=true
 VITE_ENABLE_REAL_IMAGE=false
 VITE_AI_TEXT_RESPONSE_FORMAT_ENABLED=false
-VITE_AI_REQUEST_TIMEOUT_MS=120000
+VITE_AI_MAX_CONCURRENCY=3
+VITE_AI_RETRY_COUNT=1
+VITE_AI_REQUEST_TIMEOUT_MS=60000
 ```
 
 所有 `VITE_` 变量都会进入浏览器，严禁在其中存放 API Key。
@@ -125,7 +127,7 @@ ARK_TEXT_CHAT_PATH=/chat/completions
 AI_REQUEST_TIMEOUT_MS=120000
 ```
 
-图像能力为可选项，配置项见 [`server/.env.example`](./server/.env.example)。`doubao-seed-2-0-pro-260215` 是文本模型；未配置图像模型时，头像使用项目内置的本地变体回退。
+图像能力为可选项，配置项见 [`server/.env.example`](./server/.env.example)。`doubao-seed-2-0-pro-260215` 是文本模型；未配置图像模型时，界面会明确标记头像为“示例头像”，使用项目内置的本地变体回退。
 
 ## 部署
 

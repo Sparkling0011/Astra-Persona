@@ -28,7 +28,7 @@ const emit = defineEmits<{
 }>()
 
 const personaStore = usePersonaStore()
-const { generatingSection, selectedAssetTypes } = storeToRefs(personaStore)
+const { completedAssetTypes, generatingSection, selectedAssetTypes } = storeToRefs(personaStore)
 
 const assetIcons = {
   identity: UserRound,
@@ -72,7 +72,15 @@ const generatedTime = computed(() => {
 })
 
 function isAssetLoading(type: AssetType) {
-  return props.loading && (generatingSection.value === 'brand' || generatingSection.value === type)
+  if (!props.loading) {
+    return false
+  }
+
+  if (generatingSection.value === 'brand') {
+    return !completedAssetTypes.value.includes(type)
+  }
+
+  return generatingSection.value === type
 }
 
 function inferAssetTypes(brand: PersonaBrand): AssetType[] {

@@ -11,6 +11,11 @@ export interface GenerationContext {
   language: 'zh-CN' | 'en-US' | 'bilingual'
   requiredKeywords: string
   excludedKeywords: string
+  experience: string
+  proofPoints: string
+  perspective: string
+  writingSample: string
+  avoidPhrases: string
 }
 
 export interface AssetConfigState {
